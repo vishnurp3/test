@@ -1,4 +1,10 @@
-curl -X POST ^
-  -H "Content-Type: application/json" ^
-  -d "{\"role_id\":\"3ffad789-6639-93bd-19a4-2d8c005deb33\",\"secret_id\":\"731d96da-8068-520b-ae52-7764a677e86a\"}" ^
-  https://vault-dev-pnf.web.deviaas.intenv01.net:443/v1/auth/approle/login
+$body = @{
+    role_id  = "3ffad789-6639-93bd-19a4-2d8c005deb33"
+    secret_id = "731d96da-8068-520b-ae52-7764a677e86a"
+}
+
+Invoke-RestMethod `
+  -Method POST `
+  -Uri "https://vault-dev-pnf.web.deviaas.intenv01.net:443/v1/auth/approle/login" `
+  -ContentType "application/json" `
+  -Body ($body | ConvertTo-Json) | ConvertTo-Json -Depth 5
