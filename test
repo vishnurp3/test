@@ -1,4 +1,6 @@
-String sql = """
-        SELECT NVL(MAX(PAR_MAP_ID), 0)
-        FROM CRS_PARENT_QUEST_MAP
-        """;
+<!-- in business module pom.xml -->
+<dependency>
+    <groupId>org.apache.commons</groupId>
+    <artifactId>commons-csv</artifactId>
+    <version>1.10.0</version>
+</dependency>
