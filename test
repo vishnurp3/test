@@ -1,10 +1,100 @@
-$body = @{
-    role_id  = "3ffad789-6639-93bd-19a4-2d8c005deb33"
-    secret_id = "731d96da-8068-520b-ae52-7764a677e86a"
-}
+@Configuration
+public class DataSourceApplicationConfig {
 
-Invoke-RestMethod `
-  -Method POST `
-  -Uri "https://vault-dev-pnf.web.deviaas.intenv01.net:443/v1/auth/approle/login" `
-  -ContentType "application/json" `
-  -Body ($body | ConvertTo-Json) | ConvertTo-Json -Depth 5
+    // ----------------------------------------------------------------------
+    // 1️⃣  DataSourceProperties for the main datasource
+    // ----------------------------------------------------------------------
+    @Bean
+    @ConfigurationProperties("spring.datasource")
+    public DataSourceProperties mainDsProperties() {
+        return new DataSourceProperties();
+    }
+
+    // ----------------------------------------------------------------------
+    // 2️⃣  DataSourceProperties for the CDF datasource
+    // ----------------------------------------------------------------------
+    @Bean
+    @ConfigurationProperties("spring.datasource.cdf")
+    public DataSourceProperties cdfDsProperties() {
+        return new DataSourceProperties();
+    }
+
+    // ----------------------------------------------------------------------
+    // 3️⃣  Main datasource bean
+    // ----------------------------------------------------------------------
+    @Bean(name = "dataSource")
+    public DataSource dataSource() {
+
+        // Build datasource from properties (URL, username, password, driver)
+        BasicDataSource ds = new BasicDataSource();
+        DataSourceProperties props = mainDsProperties();
+
+        ds.setUrl(props.getUrl());
+        ds.setUsername(props.getUsername());
+        ds.setPassword(props.getPassword());
+        ds.setDriverClassName(props.getDriverClassName());
+
+        // If you have connection pool tuning builder
+        UserDefinedDataSourceBuilder.addConnectionPoolProperties(
+                ds,
+                dataSourcePoolProperties()
+        );
+
+        return ds;
+    }
+
+    // If you already have this in your old config
+    @Bean
+    @ConfigurationProperties("spring.datasource.pool")
+    public Map<String, Object> dataSourcePoolProperties() {
+        return new HashMap<>();
+    }
+
+    // ----------------------------------------------------------------------
+    // 4️⃣  CDF datasource bean (override only username)
+    // ----------------------------------------------------------------------
+    @Bean(name = "cdfDataSource")
+    @Primary
+    public DataSource cdfDataSource() {
+
+        BasicDataSource ds = new BasicDataSource();
+        DataSourceProperties props = cdfDsProperties();
+
+        ds.setUrl(props.getUrl());
+
+        // 🔥 override username manually
+        ds.setUsername("my_custom_username");
+
+        // 🟢 password still comes from Vault automatically
+        ds.setPassword(props.getPassword());
+
+        ds.setDriverClassName(props.getDriverClassName());
+
+        // Pool config (if needed)
+        UserDefinedDataSourceBuilder.addConnectionPoolProperties(
+                ds,
+                cdfDataSourcePoolProperties()
+        );
+
+        return ds;
+    }
+
+    @Bean
+    @ConfigurationProperties("spring.datasource.cdf.pool")
+    public Map<String, Object> cdfDataSourcePoolProperties() {
+        return new HashMap<>();
+    }
+
+    // ----------------------------------------------------------------------
+    // 5️⃣  JdbcTemplates
+    // ----------------------------------------------------------------------
+    @Bean(name = "jdbcTemplate")
+    public JdbcTemplate jdbcTemplate() {
+        return new JdbcTemplate(dataSource());
+    }
+
+    @Bean(name = "cdfJdbcTemplate")
+    public JdbcTemplate cdfJdbcTemplate() {
+        return new JdbcTemplate(cdfDataSource());
+    }
+}
