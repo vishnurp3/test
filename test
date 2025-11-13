@@ -1,1 +1,337 @@
+api/
+└── com.rbs.risk.cradle.climate.migration.crs
+      ├── api
+      │     ├── CrsMigrationApiPaths.java
+      │     └── CrsQuestionTemplateColumns.java
+      ├── constants
+      │     └── CrsMigrationConstants.java
+      ├── repository
+      │     └── CrsQuestionMetadataRepository.java
+      ├── service
+      │     └── CrsQuestionTemplateService.java
+      └── view
+            └── CrsQuestionMetadataView.java
 
+business/
+└── com.rbs.risk.cradle.climate.migration.crs
+      ├── domain
+      │     └── CrsQuestionMetadata.java
+      ├── repository
+      │     └── CrsQuestionMetadataJdbcRepository.java
+      ├── service
+      │     └── CrsQuestionTemplateServiceImpl.java
+      ├── web
+      │     └── CrsMigrationQuestionTemplateController.java
+      └── util
+            └── CsvWriterUtil.java
+
+
+package com.rbs.risk.cradle.climate.migration.crs.api;
+
+public final class CrsMigrationApiPaths {
+
+    private CrsMigrationApiPaths() {}
+
+    public static final String BASE = "/api/v1/migration/crs";
+
+    public static final String QUESTION_TEMPLATE =
+            BASE + "/models/{modelCode}/questions/template";
+}
+
+package com.rbs.risk.cradle.climate.migration.crs.api;
+
+public final class CrsQuestionTemplateColumns {
+
+    private CrsQuestionTemplateColumns() {}
+
+    public static final String MODEL_CODE     = "MODEL_CODE";
+    public static final String QUESTION_ID    = "QUESTION_ID";
+    public static final String QUESTION_KEY   = "QUESTION_KEY";
+    public static final String QUESTION_TEXT  = "QUESTION_TEXT";
+    public static final String MODULE_ID      = "MODULE_ID";
+    public static final String SECTION_ID     = "SECTION_ID";
+    public static final String IS_PARENT      = "IS_PARENT";
+    public static final String QUESTION_ORDER = "QUESTION_ORDER";
+}
+package com.rbs.risk.cradle.climate.migration.crs.constants;
+
+public final class CrsMigrationConstants {
+
+    private CrsMigrationConstants() {}
+
+    public static final String LOG_PREFIX = "[CRS-MIGRATION] ";
+
+    public static final String HEADER_CONTENT_DISPOSITION =
+            "attachment; filename=\"%s\"";
+
+    public static final String FILE_TEMPLATE_NAME =
+            "crs_model_%s_question_template.csv";
+
+    public static final String CSV_MEDIA_TYPE = "text/csv";
+}
+package com.rbs.risk.cradle.climate.migration.crs.repository;
+
+import com.rbs.risk.cradle.climate.migration.crs.view.CrsQuestionMetadataView;
+import java.util.List;
+
+public interface CrsQuestionMetadataRepository {
+    List<CrsQuestionMetadataView> findForModelCode(String modelCode);
+}
+package com.rbs.risk.cradle.climate.migration.crs.service;
+
+public interface CrsQuestionTemplateService {
+    byte[] generateTemplateCsv(String modelCode);
+}
+package com.rbs.risk.cradle.climate.migration.crs.view;
+
+public interface CrsQuestionMetadataView {
+
+    String modelCode();
+    long modelVersionId();
+    long questionId();
+    String questionKey();
+    String questionText();
+    Long moduleId();
+    Long sectionId();
+}
+package com.rbs.risk.cradle.climate.migration.crs.domain;
+
+import lombok.Builder;
+
+import java.util.List;
+
+@Builder
+public record CrsQuestionMetadata(
+        String modelCode,
+        long modelVersionId,
+        long questionId,
+        String questionKey,
+        String questionText,
+        Long moduleId,
+        Long sectionId
+) {
+    public List<String> toCsvColumns() {
+        return List.of(
+                safe(modelCode),
+                String.valueOf(questionId),
+                safe(questionKey),
+                safe(questionText),
+                moduleId == null ? "" : String.valueOf(moduleId),
+                sectionId == null ? "" : String.valueOf(sectionId),
+                "",
+                ""
+        );
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+}
+package com.rbs.risk.cradle.climate.migration.crs.repository;
+
+import com.rbs.risk.cradle.climate.migration.crs.domain.CrsQuestionMetadata;
+import com.rbs.risk.cradle.climate.migration.crs.view.CrsQuestionMetadataView;
+import lombok.extern.slf4j.Slf4j;
+import oracle.jdbc.OracleTypes;
+import org.springframework.jdbc.core.*;
+import org.springframework.jdbc.core.simple.SimpleJdbcCall;
+import org.springframework.stereotype.Repository;
+
+import javax.annotation.PostConstruct;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.util.List;
+import java.util.Map;
+
+@Slf4j
+@Repository
+public class CrsQuestionMetadataJdbcRepository implements CrsQuestionMetadataRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+    private SimpleJdbcCall spCall;
+
+    public CrsQuestionMetadataJdbcRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    @PostConstruct
+    void init() {
+        log.info("[CRS-MIGRATION] Initializing stored procedure call for CRS question metadata");
+
+        this.spCall = new SimpleJdbcCall(jdbcTemplate)
+                .withProcedureName("get_model_question_metadata")
+                .declareParameters(
+                        new SqlParameter("p_model_code", Types.VARCHAR),
+                        new SqlOutParameter("p_result", OracleTypes.CURSOR, new CrsMetadataRowMapper())
+                );
+    }
+
+    @Override
+    public List<CrsQuestionMetadataView> findForModelCode(String modelCode) {
+        log.info("[CRS-MIGRATION] Loading question metadata for model {}", modelCode);
+
+        Map<String, Object> result = spCall.execute(modelCode);
+
+        @SuppressWarnings("unchecked")
+        List<CrsQuestionMetadata> list = (List<CrsQuestionMetadata>) result.get("p_result");
+
+        return list.stream()
+                .map(CrsMetadataViewImpl::new)
+                .toList();
+    }
+
+    private static class CrsMetadataRowMapper implements RowMapper<CrsQuestionMetadata> {
+
+        @Override
+        public CrsQuestionMetadata mapRow(ResultSet rs, int rowNum) throws SQLException {
+            return CrsQuestionMetadata.builder()
+                    .modelCode(rs.getString("MODEL_CODE"))
+                    .modelVersionId(rs.getLong("MODEL_VER_ID"))
+                    .questionId(rs.getLong("QUESTION_ID"))
+                    .questionKey(rs.getString("QUESTION_KEY"))
+                    .questionText(rs.getString("QUESTION_DESCRIPTION"))
+                    .moduleId(nullableLong(rs, "MODULE_ID"))
+                    .sectionId(nullableLong(rs, "SECTION_ID"))
+                    .build();
+        }
+
+        private Long nullableLong(ResultSet rs, String col) throws SQLException {
+            long v = rs.getLong(col);
+            return rs.wasNull() ? null : v;
+        }
+    }
+
+    private record CrsMetadataViewImpl(CrsQuestionMetadata metadata)
+            implements CrsQuestionMetadataView {
+
+        @Override public String modelCode() { return metadata.modelCode(); }
+        @Override public long modelVersionId() { return metadata.modelVersionId(); }
+        @Override public long questionId() { return metadata.questionId(); }
+        @Override public String questionKey() { return metadata.questionKey(); }
+        @Override public String questionText() { return metadata.questionText(); }
+        @Override public Long moduleId() { return metadata.moduleId(); }
+        @Override public Long sectionId() { return metadata.sectionId(); }
+    }
+}
+package com.rbs.risk.cradle.climate.migration.crs.service;
+
+import com.rbs.risk.cradle.climate.migration.crs.api.CrsQuestionTemplateColumns;
+import com.rbs.risk.cradle.climate.migration.crs.constants.CrsMigrationConstants;
+import com.rbs.risk.cradle.climate.migration.crs.domain.CrsQuestionMetadata;
+import com.rbs.risk.cradle.climate.migration.crs.repository.CrsQuestionMetadataRepository;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+@Slf4j
+@Service
+public class CrsQuestionTemplateServiceImpl implements CrsQuestionTemplateService {
+
+    private final CrsQuestionMetadataRepository repo;
+
+    public CrsQuestionTemplateServiceImpl(CrsQuestionMetadataRepository repo) {
+        this.repo = repo;
+    }
+
+    @Override
+    public byte[] generateTemplateCsv(String modelCode) {
+        log.info("{}Generating CSV template for CRS model {}", CrsMigrationConstants.LOG_PREFIX, modelCode);
+
+        var dbRows = repo.findForModelCode(modelCode);
+
+        List<CrsQuestionMetadata> questions = dbRows.stream()
+                .map(v -> CrsQuestionMetadata.builder()
+                        .modelCode(v.modelCode())
+                        .modelVersionId(v.modelVersionId())
+                        .questionId(v.questionId())
+                        .questionKey(v.questionKey())
+                        .questionText(v.questionText())
+                        .moduleId(v.moduleId())
+                        .sectionId(v.sectionId())
+                        .build())
+                .toList();
+
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            try (Writer writer = new OutputStreamWriter(baos, StandardCharsets.UTF_8)) {
+                writeHeader(writer);
+                for (CrsQuestionMetadata q : questions) {
+                    writeRow(writer, q.toCsvColumns());
+                }
+            }
+            return baos.toByteArray();
+        } catch (IOException e) {
+            log.error("{}CSV generation failed: {}", CrsMigrationConstants.LOG_PREFIX, e.getMessage());
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private void writeHeader(Writer w) throws IOException {
+        writeRow(w, List.of(
+                CrsQuestionTemplateColumns.MODEL_CODE,
+                CrsQuestionTemplateColumns.QUESTION_ID,
+                CrsQuestionTemplateColumns.QUESTION_KEY,
+                CrsQuestionTemplateColumns.QUESTION_TEXT,
+                CrsQuestionTemplateColumns.MODULE_ID,
+                CrsQuestionTemplateColumns.SECTION_ID,
+                CrsQuestionTemplateColumns.IS_PARENT,
+                CrsQuestionTemplateColumns.QUESTION_ORDER
+        ));
+    }
+
+    private void writeRow(Writer w, List<String> cols) throws IOException {
+        w.write(String.join(",", cols) + "\n");
+    }
+}
+package com.rbs.risk.cradle.climate.migration.crs.web;
+
+import com.rbs.risk.cradle.climate.migration.crs.api.CrsMigrationApiPaths;
+import com.rbs.risk.cradle.climate.migration.crs.constants.CrsMigrationConstants;
+import com.rbs.risk.cradle.climate.migration.crs.service.CrsQuestionTemplateService;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.*;
+import org.springframework.web.bind.annotation.*;
+
+@Slf4j
+@RestController
+@RequestMapping(CrsMigrationApiPaths.BASE)
+@Api(tags = "CRS Migration APIs")
+public class CrsMigrationQuestionTemplateController {
+
+    private final CrsQuestionTemplateService service;
+
+    public CrsMigrationQuestionTemplateController(CrsQuestionTemplateService service) {
+        this.service = service;
+    }
+
+    @ApiOperation(value = "Download CRS Question Template CSV")
+    @GetMapping("/models/{modelCode}/questions/template")
+    public ResponseEntity<ByteArrayResource> downloadTemplate(
+            @ApiParam("CRS Model Code")
+            @PathVariable String modelCode) {
+
+        log.info("{}Request received for template download for model {}",
+                CrsMigrationConstants.LOG_PREFIX, modelCode);
+
+        byte[] csv = service.generateTemplateCsv(modelCode);
+
+        String filename = String.format(CrsMigrationConstants.FILE_TEMPLATE_NAME, modelCode);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(CrsMigrationConstants.CSV_MEDIA_TYPE));
+        headers.set(HttpHeaders.CONTENT_DISPOSITION,
+                String.format(CrsMigrationConstants.HEADER_CONTENT_DISPOSITION, filename));
+
+        return ResponseEntity.ok()
+                .headers(headers)
+                .body(new ByteArrayResource(csv));
+    }
+}
