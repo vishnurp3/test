@@ -1,6 +1,156 @@
-<!-- in business module pom.xml -->
-<dependency>
-    <groupId>org.apache.commons</groupId>
-    <artifactId>commons-csv</artifactId>
-    <version>1.10.0</version>
-</dependency>
+public final class CrsQuestionTemplateColumns {
+
+    private CrsQuestionTemplateColumns() {}
+
+    public static final String MODEL_CODE        = "MODEL_CODE";
+    public static final String MODEL_VERSION_ID  = "MODEL_VERSION_ID";   // NEW
+    public static final String QUESTION_ID       = "QUESTION_ID";
+    public static final String QUESTION_KEY      = "QUESTION_KEY";
+    public static final String QUESTION_TEXT     = "QUESTION_TEXT";
+    public static final String MODULE_ID         = "MODULE_ID";
+    public static final String SECTION_ID        = "SECTION_ID";
+    public static final String IS_PARENT         = "IS_PARENT";
+    public static final String QUESTION_ORDER    = "QUESTION_ORDER";
+}
+@Getter
+@Builder(toBuilder = true)
+public class CrsQuestionMetadata {
+
+    private final String modelCode;
+    private final long   modelVersionId;
+    private final long   questionId;
+    private final String questionKey;
+    private final String questionText;
+    private final Long   moduleId;
+    private final Long   sectionId;
+
+    public CrsQuestionMetadata withSectionId(Long newSectionId) {
+        return this.toBuilder()
+                .sectionId(newSectionId)
+                .build();
+    }
+
+    public List<String> toCsvColumns() {
+        return List.of(
+                safe(modelCode),
+                String.valueOf(modelVersionId),                 // NEW COLUMN
+                String.valueOf(questionId),
+                safe(questionKey),
+                safe(questionText),
+                moduleId == null ? "" : String.valueOf(moduleId),
+                sectionId == null ? "" : String.valueOf(sectionId),
+                "",                                             // IS_PARENT
+                ""                                              // QUESTION_ORDER
+        );
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+}
+for (CSVRecord record : parser) {
+    String isParent = valueOrEmpty(record, CrsQuestionTemplateColumns.IS_PARENT);
+    if (!"Y".equalsIgnoreCase(isParent)) {
+        continue;
+    }
+
+    String csvModelCode      = valueOrEmpty(record, CrsQuestionTemplateColumns.MODEL_CODE);
+    String modelVerIdStr     = valueOrEmpty(record, CrsQuestionTemplateColumns.MODEL_VERSION_ID); // NEW
+    String questionIdStr     = valueOrEmpty(record, CrsQuestionTemplateColumns.QUESTION_ID);
+    String moduleIdStr       = valueOrEmpty(record, CrsQuestionTemplateColumns.MODULE_ID);
+    String sectionIdStr      = valueOrEmpty(record, CrsQuestionTemplateColumns.SECTION_ID);
+    String orderStr          = valueOrEmpty(record, CrsQuestionTemplateColumns.QUESTION_ORDER);
+
+    Long modelVersionId  = parseLong(modelVerIdStr);   // NEW
+    Long questionId      = parseLong(questionIdStr);
+    Long moduleId        = parseLong(moduleIdStr);
+    Long sectionId       = parseLong(sectionIdStr);
+    Long questionOrder   = parseLong(orderStr);
+
+    // Now require modelVersionId as well
+    if (modelVersionId == null || questionId == null || moduleId == null || sectionId == null) {
+        log.warn("{}Skipping row {}: missing required fields [modelVerId={}, qId={}, moduleId={}, sectionId={}]",
+                CrsMigrationConstants.LOG_PREFIX,
+                record.getRecordNumber(),
+                modelVerIdStr, questionIdStr, moduleIdStr, sectionIdStr);
+        continue;
+    }
+
+    String effectiveModelCode =
+            (csvModelCode != null && !csvModelCode.isBlank())
+                    ? csvModelCode
+                    : modelCode;
+
+    long parMapId = nextId++;
+
+    migrationRepository.mergeParentMapping(
+            parMapId,
+            effectiveModelCode,
+            questionId,
+            moduleId,
+            sectionId,
+            modelVersionId,      // NEW
+            questionOrder
+    );
+
+    insertedCount++;
+}
+void mergeParentMapping(long parMapId,
+                        String modelCode,
+                        long questionId,
+                        long moduleId,
+                        long sectionId,
+                        long modelVersionId,   // NEW
+                        Long questionOrder);
+@Override
+public void mergeParentMapping(long parMapId,
+                               String modelCode,
+                               long questionId,
+                               long moduleId,
+                               long sectionId,
+                               long modelVersionId,
+                               Long questionOrder) {
+
+    long orderValue = (questionOrder != null) ? questionOrder : 0L;
+
+    String sql = """
+        MERGE INTO CRS_PARENT_QUEST_MAP tgt
+        USING (
+            SELECT ? AS PAR_MAP_ID,
+                   ? AS MODULE_ID,
+                   ? AS PARENT_QUESTION_ID,
+                   ? AS MODEL_VERSION_ID,
+                   ? AS SECTION_ID,
+                   ? AS QUEST_ORDER
+            FROM DUAL
+        ) src
+        ON (tgt.PAR_MAP_ID = src.PAR_MAP_ID)
+        WHEN NOT MATCHED THEN
+          INSERT (PAR_MAP_ID,
+                  MODULE_ID,
+                  PARENT_QUESTION_ID,
+                  MODEL_VERSION_ID,
+                  SECTION_ID,
+                  QUEST_ORDER,
+                  HAS_REMOVED_IN_UPPER_VERSIONS,
+                  CREATION_DATE,
+                  EXPIRY_EVENT_ID)
+          VALUES (src.PAR_MAP_ID,
+                  src.MODULE_ID,
+                  src.PARENT_QUESTION_ID,
+                  src.MODEL_VERSION_ID,
+                  src.SECTION_ID,
+                  src.QUEST_ORDER,
+                  'N',
+                  SYSTIMESTAMP,
+                  0)
+        """;
+
+    jdbcTemplate.update(sql,
+            parMapId,
+            moduleId,
+            questionId,
+            modelVersionId,
+            sectionId,
+            orderValue);
+}
