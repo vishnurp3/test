@@ -1,47 +1,19 @@
-import lombok.Builder;
-import lombok.Getter;
-
-import java.util.List;
-
-@Getter
-@Builder(toBuilder = true)
-public class CrsQuestionMetadata {
-
-    private final String modelCode;
-    private final long modelVersionId;
-    private final long questionId;
-    private final String questionKey;
-    private final String questionText;
-    private final Long moduleId;
-    private final Long sectionId;
-
-    /**
-     * Copy with new sectionId.
-     * Uses builder.toBuilder() so the object remains immutable.
-     */
-    public CrsQuestionMetadata withSectionId(Long newSectionId) {
-        return this.toBuilder()
-                .sectionId(newSectionId)
-                .build();
+private List<CrsQuestionMetadata> sortForCsv(List<CrsQuestionMetadata> list) {
+        return list.stream()
+                .sorted(csvOrderingComparator())
+                .toList();
     }
 
-    /**
-     * Converts domain object into CSV columns in the correct order.
-     */
-    public List<String> toCsvColumns() {
-        return List.of(
-                safe(modelCode),
-                String.valueOf(questionId),
-                safe(questionKey),
-                safe(questionText),
-                moduleId == null ? "" : String.valueOf(moduleId),
-                sectionId == null ? "" : String.valueOf(sectionId),
-                "",  // IS_PARENT (to be filled by user)
-                ""   // QUESTION_ORDER (to be filled by user)
-        );
+    private Comparator<CrsQuestionMetadata> csvOrderingComparator() {
+        return Comparator
+                // sectionId ASC (nulls last)
+                .comparing(CrsQuestionMetadata::getSectionId,
+                        Comparator.nullsLast(Comparator.naturalOrder()))
+                // then moduleId ASC (nulls last)
+                .thenComparing(CrsQuestionMetadata::getModuleId,
+                        Comparator.nullsLast(Comparator.naturalOrder()))
+                // then modelVersionId ASC
+                .thenComparing(CrsQuestionMetadata::getModelVersionId)
+                // then questionId ASC
+                .thenComparing(CrsQuestionMetadata::getQuestionId);
     }
-
-    private static String safe(String value) {
-        return value == null ? "" : value;
-    }
-}
