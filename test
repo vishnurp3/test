@@ -1,14 +1,1 @@
-Completed Today:
-
-Completed the CTP DB configuration changes as part of the migration flow.
-
-The parent question list is now added in the API response.
-– The response can be retrieved in the 15-1 environment.
-
-Got KT from Lovelace and Sunil on the CDF service migration to the new framework, the calculator migration approach, and the deployment process for CDF services.
-
-Next Steps:
-
-Start making the required changes in the CDF service to align with the new framework.
-
-Begin working on the changes needed in the CRS calculator.
+test
