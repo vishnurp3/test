@@ -1,1 +1,774 @@
-test
+api
+ └─ com.rbs.risk.cradle.climate.migration
+      ├─ MigrationDomain.java
+      ├─ MigrationApiPaths.java
+      ├─ TemplateColumns.java
+      ├─ MigrationConstants.java
+      ├─ dto
+      │   └─ MigrationResponse.java
+      └─ service
+          ├─ ModelTemplateService.java
+          └─ ModelMigrationService.java
+business
+ └─ com.rbs.risk.cradle.climate.migration
+      ├─ domain
+      │   └─ QuestionMetadata.java
+      ├─ repository
+      │   ├─ ModelQuestionMetadataRepository.java
+      │   ├─ ModelMigrationRepository.java
+      │   └─ jdbc
+      │       ├─ ModelQuestionMetadataJdbcRepository.java
+      │       └─ ModelMigrationJdbcRepository.java
+      ├─ service
+      │   ├─ ModelTemplateServiceImpl.java
+      │   └─ ModelMigrationServiceImpl.java
+      └─ web
+          └─ ModelMigrationController.java
+package com.rbs.risk.cradle.climate.migration;
+
+public enum MigrationDomain {
+    CRS("crs"),
+    CTP("ctp");
+
+    private final String pathValue;
+
+    MigrationDomain(String pathValue) {
+        this.pathValue = pathValue;
+    }
+
+    public String pathValue() {
+        return pathValue;
+    }
+
+    public String prefixUpper() {
+        return name(); // CRS / CTP
+    }
+
+    public String prefixLower() {
+        return name().toLowerCase(); // crs / ctp
+    }
+
+    public static MigrationDomain fromPath(String value) {
+        if (value == null) {
+            throw new IllegalArgumentException("Domain cannot be null");
+        }
+        for (MigrationDomain d : values()) {
+            if (d.pathValue.equalsIgnoreCase(value)) {
+                return d;
+            }
+        }
+        throw new IllegalArgumentException("Unknown domain: " + value);
+    }
+}
+package com.rbs.risk.cradle.climate.migration;
+
+public final class MigrationApiPaths {
+
+    private MigrationApiPaths() {}
+
+    // /api/v1/migration/{domain}/...
+    public static final String BASE = "/api/v1/migration/{domain}";
+
+    public static final String TEMPLATE =
+            BASE + "/models/{modelCode}/questions/template";
+
+    public static final String MIGRATE =
+            BASE + "/models/{modelCode}/migrate";
+}
+package com.rbs.risk.cradle.climate.migration;
+
+public final class TemplateColumns {
+
+    private TemplateColumns() {}
+
+    public static final String MODEL_CODE       = "MODEL_CODE";
+    public static final String MODEL_VERSION_ID = "MODEL_VERSION_ID";
+    public static final String QUESTION_ID      = "QUESTION_ID";
+    public static final String QUESTION_KEY     = "QUESTION_KEY";
+    public static final String QUESTION_TEXT    = "QUESTION_TEXT";
+    public static final String MODULE_ID        = "MODULE_ID";
+    public static final String SECTION_ID       = "SECTION_ID";
+    public static final String IS_PARENT        = "IS_PARENT";
+    public static final String QUESTION_ORDER   = "QUESTION_ORDER";
+}
+package com.rbs.risk.cradle.climate.migration;
+
+public final class MigrationConstants {
+
+    private MigrationConstants() {}
+
+    public static final String LOG_PREFIX = "[CDF-MIGRATION] ";
+
+    public static final String HEADER_CONTENT_DISPOSITION =
+            "attachment; filename=\"%s\"";
+
+    public static final String CSV_MEDIA_TYPE = "text/csv";
+
+    public static String templateFilename(MigrationDomain domain, String modelCode) {
+        return "%s_model_%s_question_template.csv".formatted(
+                domain.name().toLowerCase(),
+                modelCode
+        );
+    }
+
+    public static String parMapFilename(MigrationDomain domain, String modelCode) {
+        return "%s_model_%s_parent_merge.sql".formatted(
+                domain.name().toLowerCase(),
+                modelCode
+        );
+    }
+}
+package com.rbs.risk.cradle.climate.migration.dto;
+
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+
+@ApiModel("Model Migration Result")
+public class MigrationResponse {
+
+    @ApiModelProperty("Domain: CRS / CTP")
+    private String domain;
+
+    @ApiModelProperty("Model code for which migration was run")
+    private String modelCode;
+
+    @ApiModelProperty("Number of parent mappings inserted")
+    private int insertedCount;
+
+    public MigrationResponse() {
+    }
+
+    public MigrationResponse(String domain, String modelCode, int insertedCount) {
+        this.domain = domain;
+        this.modelCode = modelCode;
+        this.insertedCount = insertedCount;
+    }
+
+    public String getDomain() {
+        return domain;
+    }
+
+    public String getModelCode() {
+        return modelCode;
+    }
+
+    public int getInsertedCount() {
+        return insertedCount;
+    }
+
+    public void setDomain(String domain) {
+        this.domain = domain;
+    }
+
+    public void setModelCode(String modelCode) {
+        this.modelCode = modelCode;
+    }
+
+    public void setInsertedCount(int insertedCount) {
+        this.insertedCount = insertedCount;
+    }
+}
+package com.rbs.risk.cradle.climate.migration.service;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+
+public interface ModelTemplateService {
+
+    byte[] generateTemplateCsv(MigrationDomain domain, String modelCode);
+}
+package com.rbs.risk.cradle.climate.migration.service;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+
+import java.io.InputStream;
+
+public interface ModelMigrationService {
+
+    /**
+     * Run DB migration SP and persist parent question mappings
+     * based on CSV for the given domain and model.
+     */
+    int migrateAndPersistParentMappings(MigrationDomain domain,
+                                        String modelCode,
+                                        InputStream csvInput);
+}
+package com.rbs.risk.cradle.climate.migration.domain;
+
+import lombok.Builder;
+import lombok.Getter;
+
+import java.util.List;
+
+@Getter
+@Builder(toBuilder = true)
+public class QuestionMetadata {
+
+    private final String modelCode;
+    private final long   modelVersionId;
+    private final long   questionId;
+    private final String questionKey;
+    private final String questionText;
+    private final Long   moduleId;
+    private final Long   sectionId;
+
+    public QuestionMetadata withSectionId(Long newSectionId) {
+        return this.toBuilder()
+                .sectionId(newSectionId)
+                .build();
+    }
+
+    public List<String> toCsvColumns() {
+        return List.of(
+                safe(modelCode),
+                String.valueOf(modelVersionId),
+                String.valueOf(questionId),
+                safe(questionKey),
+                safe(questionText),
+                moduleId == null ? "" : String.valueOf(moduleId),
+                sectionId == null ? "" : String.valueOf(sectionId),
+                "", // IS_PARENT
+                ""  // QUESTION_ORDER
+        );
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+}
+package com.rbs.risk.cradle.climate.migration.repository;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+import com.rbs.risk.cradle.climate.migration.domain.QuestionMetadata;
+
+import java.util.List;
+
+public interface ModelQuestionMetadataRepository {
+
+    List<QuestionMetadata> findForModel(MigrationDomain domain, String modelCode);
+}
+package com.rbs.risk.cradle.climate.migration.repository;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+
+public interface ModelMigrationRepository {
+
+    void runMigrationProcedure(MigrationDomain domain, String modelCode);
+
+    long getMaxParMapId(MigrationDomain domain);
+
+    void mergeParentMapping(MigrationDomain domain,
+                            long parMapId,
+                            long questionId,
+                            long moduleId,
+                            long sectionId,
+                            long modelVersionId,
+                            Long questionOrder);
+}
+package com.rbs.risk.cradle.climate.migration.repository.jdbc;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+import com.rbs.risk.cradle.climate.migration.domain.QuestionMetadata;
+import com.rbs.risk.cradle.climate.migration.repository.ModelQuestionMetadataRepository;
+import lombok.extern.slf4j.Slf4j;
+import oracle.jdbc.OracleTypes;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.core.SqlOutParameter;
+import org.springframework.jdbc.core.SqlParameter;
+import org.springframework.jdbc.core.simple.SimpleJdbcCall;
+import org.springframework.stereotype.Repository;
+
+import javax.annotation.PostConstruct;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+
+@Slf4j
+@Repository
+public class ModelQuestionMetadataJdbcRepository implements ModelQuestionMetadataRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+    private final Map<MigrationDomain, SimpleJdbcCall> calls = new EnumMap<>(MigrationDomain.class);
+
+    public ModelQuestionMetadataJdbcRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    @PostConstruct
+    void init() {
+        for (MigrationDomain domain : MigrationDomain.values()) {
+            String procName = domain.prefixUpper() + "_GET_MODEL_QUESTION_METADATA";
+
+            SimpleJdbcCall call = new SimpleJdbcCall(jdbcTemplate)
+                    // .withSchemaName("...") // if needed
+                    .withProcedureName(procName)
+                    .withoutProcedureColumnMetaDataAccess()
+                    .declareParameters(
+                            new SqlParameter("p_model_code", Types.VARCHAR),
+                            new SqlOutParameter("p_result", OracleTypes.CURSOR, new QuestionRowMapper())
+                    );
+
+            calls.put(domain, call);
+        }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<QuestionMetadata> findForModel(MigrationDomain domain, String modelCode) {
+        SimpleJdbcCall call = calls.get(domain);
+        if (call == null) {
+            throw new IllegalStateException("No SP call configured for domain " + domain);
+        }
+
+        Map<String, Object> out = call.execute(modelCode);
+        List<QuestionMetadata> list = (List<QuestionMetadata>) out.get("p_result");
+
+        log.info("[CDF-MIGRATION] Loaded {} question rows for {} model {}",
+                list.size(), domain.name(), modelCode);
+
+        return list;
+    }
+
+    private static class QuestionRowMapper implements RowMapper<QuestionMetadata> {
+        @Override
+        public QuestionMetadata mapRow(ResultSet rs, int rowNum) throws SQLException {
+            return QuestionMetadata.builder()
+                    .modelCode(rs.getString("MODEL_CODE"))
+                    .modelVersionId(rs.getLong("MODEL_VER_ID"))
+                    .questionId(rs.getLong("QUESTION_ID"))
+                    .questionKey(rs.getString("QUESTION_KEY"))
+                    .questionText(rs.getString("QUESTION_TEXT"))
+                    .moduleId((Long) rs.getObject("MODULE_ID"))
+                    .sectionId((Long) rs.getObject("SECTION_ID"))
+                    .build();
+        }
+    }
+}
+package com.rbs.risk.cradle.climate.migration.repository.jdbc;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+import com.rbs.risk.cradle.climate.migration.repository.ModelMigrationRepository;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.SqlParameter;
+import org.springframework.jdbc.core.simple.SimpleJdbcCall;
+import org.springframework.stereotype.Repository;
+
+import javax.annotation.PostConstruct;
+import java.sql.Types;
+import java.util.EnumMap;
+import java.util.Map;
+
+@Slf4j
+@Repository
+public class ModelMigrationJdbcRepository implements ModelMigrationRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+    private final Map<MigrationDomain, SimpleJdbcCall> migrateCalls = new EnumMap<>(MigrationDomain.class);
+
+    public ModelMigrationJdbcRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    @PostConstruct
+    void init() {
+        for (MigrationDomain domain : MigrationDomain.values()) {
+            String procName = domain.prefixUpper() + "_MIGRATE_MODEL_TO_NEW_FRAMEWORK";
+
+            SimpleJdbcCall call = new SimpleJdbcCall(jdbcTemplate)
+                    // .withSchemaName("...") // if needed
+                    .withProcedureName(procName)
+                    .withoutProcedureColumnMetaDataAccess()
+                    .declareParameters(
+                            new SqlParameter("p_model_code", Types.VARCHAR)
+                    );
+
+            migrateCalls.put(domain, call);
+        }
+    }
+
+    @Override
+    public void runMigrationProcedure(MigrationDomain domain, String modelCode) {
+        SimpleJdbcCall call = migrateCalls.get(domain);
+        if (call == null) {
+            throw new IllegalStateException("No migrate SP configured for domain " + domain);
+        }
+
+        log.info("[CDF-MIGRATION] Executing {} migration SP for model {}",
+                domain.name(), modelCode);
+
+        call.execute(modelCode);
+    }
+
+    @Override
+    public long getMaxParMapId(MigrationDomain domain) {
+        String sql = """
+            SELECT NVL(MAX(PAR_MAP_ID), 0)
+            FROM %s_PARENT_QUEST_MAP
+            """.formatted(domain.prefixUpper());
+
+        Long result = jdbcTemplate.queryForObject(sql, Long.class);
+        long finalValue = result != null ? result : 0L;
+
+        log.info("[CDF-MIGRATION] {} max PAR_MAP_ID = {}", domain.name(), finalValue);
+        return finalValue;
+    }
+
+    @Override
+    public void mergeParentMapping(MigrationDomain domain,
+                                   long parMapId,
+                                   long questionId,
+                                   long moduleId,
+                                   long sectionId,
+                                   long modelVersionId,
+                                   Long questionOrder) {
+
+        long orderValue = (questionOrder != null) ? questionOrder : 0L;
+
+        String sql = """
+            MERGE INTO %s_PARENT_QUEST_MAP tgt
+            USING (
+                SELECT ? AS PAR_MAP_ID,
+                       ? AS MODULE_ID,
+                       ? AS PARENT_QUESTION_ID,
+                       ? AS MODEL_VERSION_ID,
+                       ? AS SECTION_ID,
+                       ? AS QUEST_ORDER
+                FROM DUAL
+            ) src
+            ON (tgt.PAR_MAP_ID = src.PAR_MAP_ID)
+            WHEN NOT MATCHED THEN
+              INSERT (PAR_MAP_ID,
+                      MODULE_ID,
+                      PARENT_QUESTION_ID,
+                      MODEL_VERSION_ID,
+                      SECTION_ID,
+                      QUEST_ORDER,
+                      HAS_REMOVED_IN_UPPER_VERSIONS,
+                      CREATION_DATE,
+                      EXPIRY_EVENT_ID)
+              VALUES (src.PAR_MAP_ID,
+                      src.MODULE_ID,
+                      src.PARENT_QUESTION_ID,
+                      src.MODEL_VERSION_ID,
+                      src.SECTION_ID,
+                      src.QUEST_ORDER,
+                      'N',
+                      SYSTIMESTAMP,
+                      0)
+            """.formatted(domain.prefixUpper());
+
+        jdbcTemplate.update(sql,
+                parMapId,
+                moduleId,
+                questionId,
+                modelVersionId,
+                sectionId,
+                orderValue);
+    }
+}
+package com.rbs.risk.cradle.climate.migration.service;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+import com.rbs.risk.cradle.climate.migration.TemplateColumns;
+import com.rbs.risk.cradle.climate.migration.domain.QuestionMetadata;
+import com.rbs.risk.cradle.climate.migration.repository.ModelQuestionMetadataRepository;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.UncheckedIOException;
+import java.io.Writer;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+@Slf4j
+@Service
+public class ModelTemplateServiceImpl implements ModelTemplateService {
+
+    private final ModelQuestionMetadataRepository repository;
+
+    public ModelTemplateServiceImpl(ModelQuestionMetadataRepository repository) {
+        this.repository = repository;
+    }
+
+    @Override
+    public byte[] generateTemplateCsv(MigrationDomain domain, String modelCode) {
+        log.info("[CDF-MIGRATION] Generating template for {} model {}", domain.name(), modelCode);
+
+        List<QuestionMetadata> raw = repository.findForModel(domain, modelCode);
+        List<QuestionMetadata> expanded = expandSection5To3And4(raw);
+        List<QuestionMetadata> sorted = sortForCsv(expanded);
+
+        return writeCsv(sorted);
+    }
+
+    private List<QuestionMetadata> expandSection5To3And4(List<QuestionMetadata> list) {
+        return list.stream()
+                .flatMap(q -> {
+                    Long s = q.getSectionId();
+                    if (s != null && s == 5L) {
+                        return java.util.stream.Stream.of(
+                                q.withSectionId(3L),
+                                q.withSectionId(4L)
+                        );
+                    }
+                    return java.util.stream.Stream.of(q);
+                })
+                .toList();
+    }
+
+    private List<QuestionMetadata> sortForCsv(List<QuestionMetadata> list) {
+        return list.stream()
+                .sorted(java.util.Comparator
+                        .comparing(QuestionMetadata::getSectionId,
+                                java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))
+                        .thenComparing(QuestionMetadata::getModuleId,
+                                java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))
+                        .thenComparing(QuestionMetadata::getModelVersionId)
+                        .thenComparing(QuestionMetadata::getQuestionId))
+                .toList();
+    }
+
+    private byte[] writeCsv(List<QuestionMetadata> sorted) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            try (Writer writer = new OutputStreamWriter(baos, StandardCharsets.UTF_8)) {
+                writeHeader(writer);
+                for (QuestionMetadata q : sorted) {
+                    writeRow(writer, q.toCsvColumns());
+                }
+            }
+            return baos.toByteArray();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private void writeHeader(Writer w) throws IOException {
+        writeRow(w, List.of(
+                TemplateColumns.MODEL_CODE,
+                TemplateColumns.MODEL_VERSION_ID,
+                TemplateColumns.QUESTION_ID,
+                TemplateColumns.QUESTION_KEY,
+                TemplateColumns.QUESTION_TEXT,
+                TemplateColumns.MODULE_ID,
+                TemplateColumns.SECTION_ID,
+                TemplateColumns.IS_PARENT,
+                TemplateColumns.QUESTION_ORDER
+        ));
+    }
+
+    private void writeRow(Writer w, List<String> cols) throws IOException {
+        List<String> escaped = cols.stream()
+                .map(this::escapeCsv)
+                .toList();
+        w.write(String.join(",", escaped));
+        w.write("\n");
+    }
+
+    private String escapeCsv(String value) {
+        if (value == null) return "";
+        boolean special = value.contains(",") || value.contains("\"")
+                || value.contains("\n") || value.contains("\r");
+        String escaped = value.replace("\"", "\"\"");
+        return special ? "\"" + escaped + "\"" : escaped;
+    }
+}
+package com.rbs.risk.cradle.climate.migration.service;
+
+import com.rbs.risk.cradle.climate.migration.MigrationDomain;
+import com.rbs.risk.cradle.climate.migration.TemplateColumns;
+import com.rbs.risk.cradle.climate.migration.repository.ModelMigrationRepository;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
+import org.springframework.stereotype.Service;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+
+@Slf4j
+@Service
+public class ModelMigrationServiceImpl implements ModelMigrationService {
+
+    private final ModelMigrationRepository migrationRepository;
+
+    public ModelMigrationServiceImpl(ModelMigrationRepository migrationRepository) {
+        this.migrationRepository = migrationRepository;
+    }
+
+    @Override
+    public int migrateAndPersistParentMappings(MigrationDomain domain,
+                                               String modelCode,
+                                               InputStream csvInput) {
+
+        migrationRepository.runMigrationProcedure(domain, modelCode);
+
+        long maxId = migrationRepository.getMaxParMapId(domain);
+        long nextId = maxId + 1;
+        int inserted = 0;
+
+        try (Reader reader = new InputStreamReader(csvInput, StandardCharsets.UTF_8)) {
+            CSVParser parser = CSVFormat.DEFAULT.builder()
+                    .setHeader()
+                    .setSkipHeaderRecord(true)
+                    .build()
+                    .parse(reader);
+
+            for (CSVRecord record : parser) {
+                String isParent = valueOrEmpty(record, TemplateColumns.IS_PARENT);
+                if (!"Y".equalsIgnoreCase(isParent)) {
+                    continue;
+                }
+
+                String modelVerStr = valueOrEmpty(record, TemplateColumns.MODEL_VERSION_ID);
+                String questionIdStr = valueOrEmpty(record, TemplateColumns.QUESTION_ID);
+                String moduleIdStr = valueOrEmpty(record, TemplateColumns.MODULE_ID);
+                String sectionIdStr = valueOrEmpty(record, TemplateColumns.SECTION_ID);
+                String orderStr = valueOrEmpty(record, TemplateColumns.QUESTION_ORDER);
+
+                Long modelVerId = parseLong(modelVerStr);
+                Long qId        = parseLong(questionIdStr);
+                Long moduleId   = parseLong(moduleIdStr);
+                Long sectionId  = parseLong(sectionIdStr);
+                Long qOrder     = parseLong(orderStr);
+
+                if (modelVerId == null || qId == null || moduleId == null || sectionId == null) {
+                    log.warn("[CDF-MIGRATION] Skipping record {}: missing required fields",
+                            record.getRecordNumber());
+                    continue;
+                }
+
+                long parMapId = nextId++;
+                migrationRepository.mergeParentMapping(
+                        domain,
+                        parMapId,
+                        qId,
+                        moduleId,
+                        sectionId,
+                        modelVerId,
+                        qOrder
+                );
+                inserted++;
+            }
+
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        log.info("[CDF-MIGRATION] {} migration complete for model {}. Inserted {}",
+                domain.name(), modelCode, inserted);
+        return inserted;
+    }
+
+    private String valueOrEmpty(CSVRecord r, String col) {
+        String v = r.get(col);
+        return v == null ? "" : v.trim();
+    }
+
+    private Long parseLong(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return Long.valueOf(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+}
+package com.rbs.risk.cradle.climate.migration.web;
+
+import com.rbs.risk.cradle.climate.migration.*;
+import com.rbs.risk.cradle.climate.migration.dto.MigrationResponse;
+import com.rbs.risk.cradle.climate.migration.service.ModelMigrationService;
+import com.rbs.risk.cradle.climate.migration.service.ModelTemplateService;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.*;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+@Slf4j
+@RestController
+@RequestMapping("/api/v1/migration")
+@Api(tags = "CDF Migration APIs")
+public class ModelMigrationController {
+
+    private final ModelTemplateService templateService;
+    private final ModelMigrationService migrationService;
+
+    public ModelMigrationController(ModelTemplateService templateService,
+                                    ModelMigrationService migrationService) {
+        this.templateService = templateService;
+        this.migrationService = migrationService;
+    }
+
+    @ApiOperation("Download question template CSV for a given domain/model")
+    @GetMapping(
+            value = "/{domain}/models/{modelCode}/questions/template",
+            produces = MigrationConstants.CSV_MEDIA_TYPE
+    )
+    public ResponseEntity<ByteArrayResource> downloadTemplate(
+            @ApiParam("Domain: crs or ctp")
+            @PathVariable String domain,
+            @ApiParam("Model code")
+            @PathVariable String modelCode) {
+
+        MigrationDomain d = MigrationDomain.fromPath(domain);
+        byte[] bytes = templateService.generateTemplateCsv(d, modelCode);
+
+        String filename = MigrationConstants.templateFilename(d, modelCode);
+        ByteArrayResource resource = new ByteArrayResource(bytes);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.CONTENT_DISPOSITION,
+                String.format(MigrationConstants.HEADER_CONTENT_DISPOSITION, filename));
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(MigrationConstants.CSV_MEDIA_TYPE))
+                .headers(headers)
+                .body(resource);
+    }
+
+    @ApiOperation("Run DB migration and persist parent mappings from CSV")
+    @PostMapping(
+            value = "/{domain}/models/{modelCode}/migrate",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<MigrationResponse> migrate(
+            @ApiParam("Domain: crs or ctp")
+            @PathVariable String domain,
+            @ApiParam("Model code")
+            @PathVariable String modelCode,
+            @ApiParam("Filled template CSV")
+            @RequestPart("file") MultipartFile file) {
+
+        MigrationDomain d = MigrationDomain.fromPath(domain);
+
+        int inserted = migrationService.migrateAndPersistParentMappings(
+                d, modelCode, getInputStream(file));
+
+        MigrationResponse response =
+                new MigrationResponse(d.name(), modelCode, inserted);
+
+        return ResponseEntity.ok(response);
+    }
+
+    private java.io.InputStream getInputStream(MultipartFile file) {
+        try {
+            return file.getInputStream();
+        } catch (Exception e) {
+            throw new RuntimeException("Unable to read uploaded file", e);
+        }
+    }
+}
