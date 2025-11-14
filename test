@@ -1,1 +1,58 @@
-test
+Here is the revised version with the first completed item updated as you requested:
+
+
+---
+
+POC – Key Updates (Today)
+
+Completed:
+
+Got KT on the migration steps needed for DB configuration.
+
+Created a stored procedure that:
+
+Takes model code as input
+
+Adds questions to the rules table
+
+Creates the new scorecard table
+
+Migrates data from the old table to the new table
+
+Updates the model version table with the new table name
+
+
+Added a configuration table to track which models can be migrated.
+
+Added a controller in CDF service with two endpoints:
+
+Generates the question template (CSV) for identifying parent questions
+
+Uploads the updated template, calls the stored procedure, and updates the parent question map table
+
+
+Completed the flow for CRS.
+
+
+In Progress / To Do (by end of day):
+
+Apply the same flow to CTPA.
+
+
+Pending / Next Steps:
+
+Get KT on CDF service migration steps to integrate with UI.
+
+Make the required CDF service changes in a configurable way if possible.
+
+Get KT on the migration steps needed for the new calculator framework.
+
+Work on calculator changes in a configurable way if possible.
+
+Need KT on the environment where this POC can be tested with UI integration, and guidance on how deployment will be done.
+
+
+
+---
+
+Tell me if you want this even shorter or formatted for Slack/Teams.
