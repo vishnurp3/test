@@ -1,1 +1,50 @@
-test
+public static void main(String[] args) {
+
+    String modelCode = "SMC";
+    String modelVersion = "1.0";
+
+    System.out.printf("Starting CRE-CRS migration helper for model %s %s%n",
+            modelCode, modelVersion);
+
+    try {
+        List<VariableMetadata> variables =
+                VariableMetadataRepository.loadVariablesForModel(modelCode, modelVersion);
+
+        System.out.printf("Step 1: loaded %d variables from database.%n", variables.size());
+
+        // ---------------------------------------------------------
+        // PRINT HEADER
+        // ---------------------------------------------------------
+        System.out.println("Model Code,Model Version,Module,Question,Variable Name,Type,prefix,RefDataProvider");
+
+        // ---------------------------------------------------------
+        // PRINT EACH VARIABLE ROW IN CSV FORMAT
+        // ---------------------------------------------------------
+        for (VariableMetadata v : variables) {
+
+            // Type is empty → print as "" (just two commas)
+            String type = "";
+
+            // Default refDataProvider
+            String refDataProvider = "NA";
+
+            System.out.printf(
+                    "%s,%s,%s,%s,%s,%s,%s,%s%n",
+                    modelCode,                // input
+                    modelVersion,             // input
+                    v.moduleKey(),            // module
+                    v.questionKey(),          // question
+                    v.variableName(),         // variable name
+                    type,                     // empty column
+                    v.prefix(),               // prefix
+                    refDataProvider           // NA
+            );
+        }
+
+        System.out.println("Migration step 1 completed.");
+
+    } catch (SQLException e) {
+        System.err.println("Error during migration: " + e.getMessage());
+        e.printStackTrace(System.err);
+    }
+}
