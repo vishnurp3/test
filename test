@@ -1,25 +1,68 @@
-package com.rbs.risk.cradle.climate.migration.calculator.dto;
+package com.rbs.risk.cradle.climate.migration.calculator.domain;
 
-public record QuestionVarMappingRow(
-        String modelCode,
-        String modelVersion,
-        String moduleKey,
-        String questionKey,
-        String variableName,
-        String type,
-        String prefix,
-        String refDataProvider
-) {}
-package com.rbs.risk.cradle.climate.migration.calculator.dto;
+import lombok.Getter;
 
-public record StrategyMappingRow(
-        String modelCode,
-        String modelVersion,
-        String question,
-        String enricher,
-        String method,
-        String child,
-        String commands,
-        String weightFactor,
-        String type
-) {}
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+@Getter
+public class Question implements Comparable<Question> {
+
+    private final long questionId;
+    private final String questionKey;
+    private final List<Question> children = new ArrayList<>();
+    private final List<Variable> variables = new ArrayList<>();
+    private int orderInModule;
+
+    public Question(long questionId, String questionKey) {
+        this.questionId = questionId;
+        this.questionKey = questionKey;
+    }
+
+    public void addChild(Question child) {
+        if (!children.contains(child)) {
+            children.add(child);
+        }
+    }
+
+    public void addVariable(Variable variable) {
+        variables.add(variable);
+    }
+
+    public void setOrderInModule(int orderInModule) {
+        this.orderInModule = orderInModule;
+    }
+
+    public String computeChildQuestionKeys() {
+        if (children.isEmpty()) {
+            return "";
+        }
+        return children.stream()
+                .map(Question::getQuestionKey)
+                .distinct()
+                .collect(Collectors.joining("|"));
+    }
+
+    @Override
+    public int compareTo(Question other) {
+        int cmp = Integer.compare(this.orderInModule, other.orderInModule);
+        if (cmp != 0) {
+            return cmp;
+        }
+        return Long.compare(this.questionId, other.questionId);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Question question)) return false;
+        return questionId == question.questionId;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(questionId);
+    }
+}
