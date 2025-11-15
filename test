@@ -1,50 +1,244 @@
-public static void main(String[] args) {
+package com.rbs.risk.cradle.climate.migration.calculator.dto;
 
-    String modelCode = "SMC";
-    String modelVersion = "1.0";
+public record QuestionVariableRow(
+        long modelVerId,
+        long moduleId,
+        String moduleKey,
+        long questionId,
+        String questionKey,
+        Long parentQuestionId,
+        String variableName,
+        String prefix
+) {}
+package com.rbs.risk.cradle.climate.migration.calculator.dto;
 
-    System.out.printf("Starting CRE-CRS migration helper for model %s %s%n",
-            modelCode, modelVersion);
+public record ParentQuestMapRow(
+        long modelVerId,
+        long moduleId,
+        long parentQuestionId,
+        int questOrder
+) {}
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
 
-    try {
-        List<VariableMetadata> variables =
-                VariableMetadataRepository.loadVariablesForModel(modelCode, modelVersion);
+public interface ModelVersionRepository {
 
-        System.out.printf("Step 1: loaded %d variables from database.%n", variables.size());
+    long findModelVersionId(String modelCode, String modelVersion);
 
-        // ---------------------------------------------------------
-        // PRINT HEADER
-        // ---------------------------------------------------------
-        System.out.println("Model Code,Model Version,Module,Question,Variable Name,Type,prefix,RefDataProvider");
+    Long findLinkedModelVersionId(long modelVerId);
+}
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
 
-        // ---------------------------------------------------------
-        // PRINT EACH VARIABLE ROW IN CSV FORMAT
-        // ---------------------------------------------------------
-        for (VariableMetadata v : variables) {
+import com.rbs.risk.cradle.climate.migration.calculator.dto.QuestionVariableRow;
 
-            // Type is empty → print as "" (just two commas)
-            String type = "";
+import java.util.List;
 
-            // Default refDataProvider
-            String refDataProvider = "NA";
+public interface QuestionVariableRepository {
 
-            System.out.printf(
-                    "%s,%s,%s,%s,%s,%s,%s,%s%n",
-                    modelCode,                // input
-                    modelVersion,             // input
-                    v.moduleKey(),            // module
-                    v.questionKey(),          // question
-                    v.variableName(),         // variable name
-                    type,                     // empty column
-                    v.prefix(),               // prefix
-                    refDataProvider           // NA
+    List<QuestionVariableRow> findQuestionVariables(List<Long> modelVerIds);
+}
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
+
+import com.rbs.risk.cradle.climate.migration.calculator.dto.ParentQuestMapRow;
+
+import java.util.List;
+
+public interface ParentQuestMapRepository {
+
+    List<ParentQuestMapRow> findParentQuestMap(List<Long> modelVerIds, int sectionId);
+}
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.EmptyResultDataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+@Slf4j
+@Repository
+@RequiredArgsConstructor
+public class ModelVersionRepositoryImpl implements ModelVersionRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    @Override
+    public long findModelVersionId(String modelCode, String modelVersion) {
+        String sql = """
+                select cmv.model_ver_id
+                from cdf_model_version cmv
+                         join cdf_model cm on cmv.model_id = cm.model_id
+                where cm.model_code = ?
+                  and cmv.model_version = ?
+                """;
+
+        try {
+            Long result = jdbcTemplate.queryForObject(sql, Long.class, modelCode, modelVersion);
+            if (result == null) {
+                throw new IllegalStateException("No model_ver_id found for modelCode=%s, modelVersion=%s"
+                        .formatted(modelCode, modelVersion));
+            }
+            return result;
+        } catch (EmptyResultDataAccessException ex) {
+            throw new IllegalStateException(
+                    "No model_ver_id found for modelCode=%s, modelVersion=%s"
+                            .formatted(modelCode, modelVersion),
+                    ex
             );
         }
+    }
 
-        System.out.println("Migration step 1 completed.");
+    @Override
+    public Long findLinkedModelVersionId(long modelVerId) {
+        String sql = """
+                select linked_model_ver_id
+                from cdf_linked_model_version_id
+                where model_ver_id = ?
+                """;
 
-    } catch (SQLException e) {
-        System.err.println("Error during migration: " + e.getMessage());
-        e.printStackTrace(System.err);
+        try {
+            return jdbcTemplate.queryForObject(sql, Long.class, modelVerId);
+        } catch (EmptyResultDataAccessException ex) {
+            return null;
+        }
+    }
+}
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
+
+import com.rbs.risk.cradle.climate.migration.calculator.dto.QuestionVariableRow;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collections;
+import java.util.List;
+
+@Repository
+@RequiredArgsConstructor
+public class QuestionVariableRepositoryImpl implements QuestionVariableRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    private static final RowMapper<QuestionVariableRow> ROW_MAPPER = new RowMapper<>() {
+        @Override
+        public QuestionVariableRow mapRow(ResultSet rs, int rowNum) throws SQLException {
+            long modelVerId = rs.getLong("model_ver_id");
+            long moduleId = rs.getLong("module_id");
+            String moduleKey = rs.getString("module_key");
+            long questionId = rs.getLong("question_id");
+            String questionKey = rs.getString("question_key");
+            long parentIdRaw = rs.getLong("parent_question_id");
+            Long parentQuestionId = rs.wasNull() ? null : parentIdRaw;
+            String variableName = rs.getString("variable_name");
+            String prefix = rs.getString("prefix");
+
+            return new QuestionVariableRow(
+                    modelVerId,
+                    moduleId,
+                    moduleKey,
+                    questionId,
+                    questionKey,
+                    parentQuestionId,
+                    variableName,
+                    prefix
+            );
+        }
+    };
+
+    @Override
+    public List<QuestionVariableRow> findQuestionVariables(List<Long> modelVerIds) {
+        if (modelVerIds == null || modelVerIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        String placeholders = String.join(", ", Collections.nCopies(modelVerIds.size(), "?"));
+
+        String sql = """
+                select distinct
+                       cmm.model_ver_id,
+                       cmm.module_id,
+                       cm.module_key,
+                       cq.question_id,
+                       cq.question_key,
+                       cq.parent_question_id,
+                       cv.variable_name,
+                       cv.prefix
+                from crs_variables cv
+                         join crs_questions cq on cv.question_id = cq.question_id
+                         join crs_module_map cmm on cv.variable_id = cmm.variable_id
+                         join cdf_module cm on cmm.module_id = cm.module_id
+                where cmm.model_ver_id in (%s)
+                  and cv.prefix not in ('score', 'weighted_score', 'weight',
+                                        'inputSummary', 'justificationComment', 'overrideFlag')
+                  and cv.expiry_event_id = 0
+                """.formatted(placeholders);
+
+        Object[] params = modelVerIds.toArray();
+        return jdbcTemplate.query(sql, ROW_MAPPER, params);
+    }
+}
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
+
+import com.rbs.risk.cradle.climate.migration.calculator.dto.ParentQuestMapRow;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collections;
+import java.util.List;
+
+@Repository
+@RequiredArgsConstructor
+public class ParentQuestMapRepositoryImpl implements ParentQuestMapRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    private static final RowMapper<ParentQuestMapRow> ROW_MAPPER = new RowMapper<>() {
+        @Override
+        public ParentQuestMapRow mapRow(ResultSet rs, int rowNum) throws SQLException {
+            long modelVerId = rs.getLong("model_version_id");
+            long moduleId = rs.getLong("module_id");
+            long parentQuestionId = rs.getLong("parent_question_id");
+            int questOrder = rs.getInt("quest_order");
+
+            return new ParentQuestMapRow(
+                    modelVerId,
+                    moduleId,
+                    parentQuestionId,
+                    questOrder
+            );
+        }
+    };
+
+    @Override
+    public List<ParentQuestMapRow> findParentQuestMap(List<Long> modelVerIds, int sectionId) {
+        if (modelVerIds == null || modelVerIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        String placeholders = String.join(", ", Collections.nCopies(modelVerIds.size(), "?"));
+
+        String sql = """
+                select model_version_id,
+                       module_id,
+                       parent_question_id,
+                       quest_order
+                from crs_parent_quest_map
+                where model_version_id in (%s)
+                  and section_id = ?
+                """.formatted(placeholders);
+
+        Object[] params = new Object[modelVerIds.size() + 1];
+        for (int i = 0; i < modelVerIds.size(); i++) {
+            params[i] = modelVerIds.get(i);
+        }
+        params[modelVerIds.size()] = sectionId;
+
+        return jdbcTemplate.query(sql, ROW_MAPPER, params);
     }
 }
