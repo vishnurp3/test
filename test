@@ -1,1 +1,306 @@
-test
+package com.rbs.kestrel.calculator.crecrs.migration;
+
+import java.sql.*;
+import java.util.*;
+
+public final class VariableMetadataRepository {
+
+    private static final String JDBC_URL = requireEnv("CRE_DB_URL");
+    private static final String JDBC_USER = requireEnv("CRE_DB_USER");
+    private static final String JDBC_PASSWORD = requireEnv("CRE_DB_PASSWORD");
+
+    private VariableMetadataRepository() {}
+
+    /* -------------------------------------------------------
+     * Public API
+     * ------------------------------------------------------- */
+    public static List<VariableMetadata> loadVariablesForModel(String modelCode, String modelVersion)
+            throws SQLException {
+
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USER, JDBC_PASSWORD)) {
+
+            long modelVersionId = findModelVersionId(connection, modelCode, modelVersion);
+            Long linkedModelVersionId = findLinkedModelVersionId(connection, modelVersionId);
+
+            List<Long> modelVersionIds = buildModelVersionList(modelVersionId, linkedModelVersionId);
+
+            return fetchAndProcessVariables(connection, modelVersionIds);
+        }
+    }
+
+    /* -------------------------------------------------------
+     * Main flow
+     * ------------------------------------------------------- */
+    private static List<VariableMetadata> fetchAndProcessVariables(Connection connection,
+                                                                  List<Long> modelVersionIds)
+            throws SQLException {
+
+        List<VariableRow> variableRows = fetchVariableRows(connection, modelVersionIds);
+        Map<String, Integer> parentOrderMap = fetchParentQuestionOrders(connection, modelVersionIds);
+
+        attachParentOrder(variableRows, parentOrderMap);
+        sortByModuleAndOrder(variableRows);
+
+        return buildFinalMetadata(variableRows);
+    }
+
+    /* -------------------------------------------------------
+     * Step 1: Query model version IDs
+     * ------------------------------------------------------- */
+    private static List<Long> buildModelVersionList(long modelVersionId, Long linkedVersionId) {
+        List<Long> ids = new ArrayList<>();
+        ids.add(modelVersionId);
+        if (linkedVersionId != null) {
+            ids.add(linkedVersionId);
+        }
+        return ids;
+    }
+
+    private static long findModelVersionId(Connection connection, String modelCode, String modelVersion)
+            throws SQLException {
+
+        String sql = """
+                select cmv.model_ver_id
+                from cdf_model_version cmv
+                     join cdf_model cm on cmv.model_id = cm.model_id
+                where cm.model_code = ?
+                  and cmv.model_version = ?
+                """;
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, modelCode);
+            ps.setString(2, modelVersion);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    throw new IllegalStateException("Model version not found.");
+                }
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    private static Long findLinkedModelVersionId(Connection connection, long modelVersionId)
+            throws SQLException {
+
+        String sql = """
+                select linked_model_ver_id
+                from cdf_linked_model_version_id
+                where model_ver_id = ?
+                """;
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setLong(1, modelVersionId);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+
+                long value = rs.getLong(1);
+                return rs.wasNull() ? null : value;
+            }
+        }
+    }
+
+    /* -------------------------------------------------------
+     * Step 2: Query all variable rows for this model
+     * ------------------------------------------------------- */
+    private static List<VariableRow> fetchVariableRows(Connection connection,
+                                                       List<Long> modelVersionIds)
+            throws SQLException {
+
+        if (modelVersionIds.isEmpty()) return List.of();
+
+        String placeholders = buildSqlPlaceholders(modelVersionIds.size());
+
+        String sql = """
+                select distinct cv.variable_name,
+                                cv.prefix,
+                                cq.question_key,
+                                cq.question_id,
+                                cm.module_key,
+                                cmm.module_id,
+                                cmm.model_ver_id
+                from crs_variables cv
+                     join crs_questions cq on cv.question_id = cq.question_id
+                     join crs_module_map cmm on cv.variable_id = cmm.variable_id
+                     join cdf_module cm on cmm.module_id = cm.module_id
+                where cmm.model_ver_id in (%s)
+                  and cv.prefix not in ('score', 'weighted_score', 'weight',
+                                        'inputSummary', 'justificationComment', 'overrideFlag')
+                  and cv.expiry_event_id = 0
+                """.formatted(placeholders);
+
+        List<VariableRow> rows = new ArrayList<>();
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            setSqlPlaceholders(ps, modelVersionIds);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new VariableRow(
+                            rs.getString("variable_name"),
+                            rs.getString("prefix"),
+                            rs.getString("question_key"),
+                            rs.getLong("question_id"),
+                            rs.getString("module_key"),
+                            rs.getLong("module_id"),
+                            rs.getLong("model_ver_id")
+                    ));
+                }
+            }
+        }
+
+        return rows;
+    }
+
+    /* -------------------------------------------------------
+     * Step 3: Load parent question map (quest_order)
+     * ------------------------------------------------------- */
+    private static Map<String, Integer> fetchParentQuestionOrders(Connection connection,
+                                                                  List<Long> modelVersionIds)
+            throws SQLException {
+
+        if (modelVersionIds.isEmpty()) return Map.of();
+
+        String placeholders = buildSqlPlaceholders(modelVersionIds.size());
+
+        String sql = """
+                select model_version_id,
+                       module_id,
+                       parent_question_id,
+                       quest_order
+                from crs_parent_quest_map
+                where model_version_id in (%s)
+                  and section_id = 3
+                """.formatted(placeholders);
+
+        Map<String, Integer> orderMap = new HashMap<>();
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            setSqlPlaceholders(ps, modelVersionIds);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+
+                    String key = makeOrderMapKey(
+                            rs.getLong("model_version_id"),
+                            rs.getLong("module_id"),
+                            rs.getLong("parent_question_id")
+                    );
+
+                    orderMap.put(key, rs.getInt("quest_order"));
+                }
+            }
+        }
+
+        return orderMap;
+    }
+
+    /* -------------------------------------------------------
+     * Step 4: Attach quest_order to the variable rows
+     * ------------------------------------------------------- */
+    private static void attachParentOrder(List<VariableRow> rows,
+                                          Map<String, Integer> orderMap) {
+
+        for (VariableRow row : rows) {
+            String key = makeOrderMapKey(row.modelVersionId, row.moduleId, row.questionId);
+            row.questOrder = orderMap.getOrDefault(key, 0);
+        }
+    }
+
+    /* -------------------------------------------------------
+     * Step 5: Sort rows
+     * ------------------------------------------------------- */
+    private static void sortByModuleAndOrder(List<VariableRow> rows) {
+        rows.sort(
+                Comparator.comparingLong((VariableRow r) -> r.moduleId)
+                          .thenComparingInt(r -> r.questOrder)
+        );
+    }
+
+    /* -------------------------------------------------------
+     * Step 6: Build final VariableMetadata objects
+     * ------------------------------------------------------- */
+    private static List<VariableMetadata> buildFinalMetadata(List<VariableRow> rows) {
+
+        List<VariableMetadata> result = new ArrayList<>();
+
+        long previousModuleId = -1;
+        int moduleIndex = 0;
+
+        for (VariableRow r : rows) {
+
+            if (r.moduleId != previousModuleId) {
+                moduleIndex++;
+                previousModuleId = r.moduleId;
+            }
+
+            String factorWeight = moduleIndex + "." + r.questOrder;
+
+            result.add(new VariableMetadata(
+                    r.variableName,
+                    r.prefix,
+                    r.questionKey,
+                    r.moduleKey,
+                    factorWeight
+            ));
+        }
+
+        return result;
+    }
+
+    /* -------------------------------------------------------
+     * Helpers
+     * ------------------------------------------------------- */
+    private static String buildSqlPlaceholders(int count) {
+        return String.join(", ", Collections.nCopies(count, "?"));
+    }
+
+    private static void setSqlPlaceholders(PreparedStatement ps, List<Long> ids) throws SQLException {
+        int index = 1;
+        for (Long id : ids) {
+            ps.setLong(index++, id);
+        }
+    }
+
+    private static String makeOrderMapKey(long modelVerId, long moduleId, long parentQuestionId) {
+        return modelVerId + "-" + moduleId + "-" + parentQuestionId;
+    }
+
+    private static String requireEnv(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("Missing required env variable: " + name);
+        }
+        return value;
+    }
+
+    /* -------------------------------------------------------
+     * Internal data structure (for sorting & factorWeight)
+     * ------------------------------------------------------- */
+    private static final class VariableRow {
+        final String variableName;
+        final String prefix;
+        final String questionKey;
+
+        final long questionId;
+        final String moduleKey;
+        final long moduleId;
+        final long modelVersionId;
+
+        int questOrder;  // assigned later
+
+        VariableRow(String variableName, String prefix, String questionKey,
+                    long questionId, String moduleKey, long moduleId,
+                    long modelVersionId) {
+
+            this.variableName = variableName;
+            this.prefix = prefix;
+            this.questionKey = questionKey;
+            this.questionId = questionId;
+            this.moduleKey = moduleKey;
+            this.moduleId = moduleId;
+            this.modelVersionId = modelVersionId;
+        }
+    }
+}
