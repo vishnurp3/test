@@ -1,233 +1,256 @@
-package com.rbs.risk.cradle.climate.migration.calculator.domain;
-
-import lombok.Getter;
-
-import java.util.ArrayList;
-import java.util.List;
-
-@Getter
-public class Module {
-
-    private final long moduleId;
-    private final String moduleKey;
-    private final List<Question> questions = new ArrayList<>();
-
-    public Module(long moduleId, String moduleKey) {
-        this.moduleId = moduleId;
-        this.moduleKey = moduleKey;
-    }
-
-    public void addQuestion(Question question) {
-        if (!questions.contains(question)) {
-            questions.add(question);
-        }
-    }
-}
-package com.rbs.risk.cradle.climate.migration.calculator.domain;
-
-import lombok.Getter;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-
-@Getter
-public class Question implements Comparable<Question> {
-
-    private final long questionId;
-    private final String questionKey;
-    private final List<Question> children = new ArrayList<>();
-    private final List<Variable> variables = new ArrayList<>();
-    private int orderInModule;
-
-    public Question(long questionId, String questionKey) {
-        this.questionId = questionId;
-        this.questionKey = questionKey;
-    }
-
-    public void addChild(Question child) {
-        if (!children.contains(child)) {
-            children.add(child);
-        }
-    }
-
-    public void addVariable(Variable variable) {
-        variables.add(variable);
-    }
-
-    public void setOrderInModule(int orderInModule) {
-        this.orderInModule = orderInModule;
-    }
-
-    @Override
-    public int compareTo(Question other) {
-        int cmp = Integer.compare(this.orderInModule, other.orderInModule);
-        if (cmp != 0) {
-            return cmp;
-        }
-        return Long.compare(this.questionId, other.questionId);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Question question)) return false;
-        return questionId == question.questionId;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(questionId);
-    }
-}
-package com.rbs.risk.cradle.climate.migration.calculator.domain;
-
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-
-@Getter
-@RequiredArgsConstructor
-public class Variable {
-
-    private final String variableName;
-    private final String prefix;
-}
 package com.rbs.risk.cradle.climate.migration.calculator.service;
 
 import com.rbs.risk.cradle.climate.migration.calculator.domain.Module;
 import com.rbs.risk.cradle.climate.migration.calculator.domain.Question;
 import com.rbs.risk.cradle.climate.migration.calculator.domain.Variable;
-import com.rbs.risk.cradle.climate.migration.calculator.dto.ParentQuestMapRow;
-import com.rbs.risk.cradle.climate.migration.calculator.dto.QuestionVariableRow;
-import com.rbs.risk.cradle.climate.migration.calculator.repository.ModelVersionRepository;
-import com.rbs.risk.cradle.climate.migration.calculator.repository.ParentQuestMapRepository;
-import com.rbs.risk.cradle.climate.migration.calculator.repository.QuestionVariableRepository;
+import com.rbs.risk.cradle.climate.migration.calculator.dto.QuestionVarMappingRow;
+import com.rbs.risk.cradle.climate.migration.calculator.dto.StrategyMappingRow;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
-public class CalculatorModelBuilderService {
+public class CalculatorCsvExportService {
 
-    private final ModelVersionRepository modelVersionRepository;
-    private final QuestionVariableRepository questionVariableRepository;
-    private final ParentQuestMapRepository parentQuestMapRepository;
+    private final CalculatorModelBuilderService modelBuilderService;
 
-    public List<Module> buildModulesForModel(String modelCode, String modelVersion, int sectionId) {
-        var modelVerIds = resolveModelVersionIds(modelCode, modelVersion);
-        var questionRows = questionVariableRepository.findQuestionVariables(modelVerIds);
-        var parentRows = parentQuestMapRepository.findParentQuestMap(modelVerIds, sectionId);
+    public String buildStrategyMappingCsv(String modelCode,
+                                          String modelVersion) {
 
-        var context = buildModelContext(questionRows);
+        List<Module> modules = modelBuilderService.buildModulesForModel(modelCode, modelVersion);
+        List<StrategyMappingRow> rows = buildStrategyMappingRows(modelCode, modelVersion, modules);
 
-        wireParentChildRelations(context.questionsById(), context.parentByChildId());
-        applyQuestionOrders(context.questionsById(), parentRows);
-        pruneChildQuestionsFromModules(context.modulesById(), context.parentByChildId().keySet());
-        sortQuestionsAndChildren(context.modulesById().values());
-
-        // Actually return modules sorted by moduleId
-        return context.modulesById().values().stream()
-                .sorted(Comparator.comparingLong(Module::getModuleId))
-                .toList();
-    }
-
-    private List<Long> resolveModelVersionIds(String modelCode, String modelVersion) {
-        var modelVerId = modelVersionRepository.findModelVersionId(modelCode, modelVersion);
-        var linkedModelVerId = modelVersionRepository.findLinkedModelVersionId(modelVerId);
-
-        var modelVerIds = new ArrayList<Long>(2);
-        modelVerIds.add(modelVerId);
-        if (linkedModelVerId != null) {
-            modelVerIds.add(linkedModelVerId);
+        StringBuilder sb = new StringBuilder();
+        sb.append("Model Code,Model Version,question,enricher,method,child,commands,weight_factor,type\n");
+        for (StrategyMappingRow row : rows) {
+            sb.append(escape(row.modelCode())).append(',')
+              .append(escape(row.modelVersion())).append(',')
+              .append(escape(row.question())).append(',')
+              .append(escape(row.enricher())).append(',')
+              .append(escape(row.method())).append(',')
+              .append(escape(row.child())).append(',')
+              .append(escape(row.commands())).append(',')
+              .append(escape(row.weightFactor())).append(',')
+              .append(escape(row.type())).append('\n');
         }
-        return modelVerIds;
+        return sb.toString();
     }
 
-    /**
-     * Single-pass builder over QuestionVariableRow list.
-     */
-    private ModelBuildContext buildModelContext(List<QuestionVariableRow> questionRows) {
-        Map<Long, Question> questionsById = new LinkedHashMap<>();
-        Map<Long, Module> modulesById = new LinkedHashMap<>();
-        Map<Long, Long> parentByChildId = new LinkedHashMap<>();
+    public String buildQuestionVarMappingCsv(String modelCode,
+                                             String modelVersion) {
 
-        for (var row : questionRows) {
-            // Build / enrich Question
-            var question = questionsById.computeIfAbsent(
-                    row.questionId(),
-                    id -> new Question(id, row.questionKey())
-            );
-            question.addVariable(new Variable(row.variableName(), row.prefix()));
+        List<Module> modules = modelBuilderService.buildModulesForModel(modelCode, modelVersion);
+        List<QuestionVarMappingRow> rows = buildQuestionVarMappingRows(modelCode, modelVersion, modules);
 
-            // Build / enrich Module
-            var module = modulesById.computeIfAbsent(
-                    row.moduleId(),
-                    id -> new Module(id, row.moduleKey())
-            );
-            module.addQuestion(question);
+        StringBuilder sb = new StringBuilder();
+        sb.append("Model Code,Model Version,Module,Question,Variable Name,Type,prefix,refdataProvider\n");
+        for (QuestionVarMappingRow row : rows) {
+            sb.append(escape(row.modelCode())).append(',')
+              .append(escape(row.modelVersion())).append(',')
+              .append(escape(row.moduleKey())).append(',')
+              .append(escape(row.questionKey())).append(',')
+              .append(escape(row.variableName())).append(',')
+              .append(escape(row.type())).append(',')
+              .append(escape(row.prefix())).append(',')
+              .append(escape(row.refDataProvider())).append('\n');
+        }
+        return sb.toString();
+    }
 
-            // Capture parent mapping, if any
-            var parentId = row.parentQuestionId();
-            if (parentId != null) {
-                parentByChildId.put(row.questionId(), parentId);
+    public String buildModuleStrategyConfigCsv(String modelCode,
+                                               String modelVersion) {
+
+        StringBuilder sb = new StringBuilder();
+
+        appendModuleStrategyLines(sb, modelCode, modelVersion, "crs_tri");
+        appendModuleStrategyLines(sb, modelCode, modelVersion, "crs_trm");
+        appendModuleStrategyLines(sb, modelCode, modelVersion, "crs_pri");
+        appendModuleStrategyLines(sb, modelCode, modelVersion, "crs_prm");
+
+        return sb.toString();
+    }
+
+    private List<StrategyMappingRow> buildStrategyMappingRows(String modelCode,
+                                                              String modelVersion,
+                                                              List<Module> modules) {
+
+        List<StrategyMappingRow> result = new ArrayList<>();
+        int moduleIndex = 0;
+
+        for (Module module : modules) {
+            moduleIndex++;
+
+            for (Question parent : module.getQuestions()) {
+                String baseFactorWeight = moduleIndex + "." + parent.getOrderInModule();
+                String childKeys = parent.getChildren().isEmpty()
+                        ? "NA"
+                        : parent.computeChildQuestionKeys();
+
+                result.add(new StrategyMappingRow(
+                        modelCode,
+                        modelVersion,
+                        parent.getQuestionKey(),
+                        "NA",
+                        "NA",
+                        childKeys,
+                        "",
+                        baseFactorWeight,
+                        "Sector:ALL"
+                ));
+
+                char suffixChar = 'a';
+                for (Question child : parent.getChildren()) {
+                    String suffix = String.valueOf(suffixChar++);
+                    String childFactorWeight = baseFactorWeight + suffix;
+
+                    result.add(new StrategyMappingRow(
+                            modelCode,
+                            modelVersion,
+                            child.getQuestionKey(),
+                            "NA",
+                            "NA",
+                            "NA",
+                            "",
+                            childFactorWeight,
+                            "Sector:ALL"
+                    ));
+                }
             }
         }
 
-        return new ModelBuildContext(modulesById, questionsById, parentByChildId);
+        return result;
     }
 
-    private void wireParentChildRelations(Map<Long, Question> questionsById,
-                                          Map<Long, Long> parentByChildId) {
-        for (var entry : parentByChildId.entrySet()) {
-            var childId = entry.getKey();
-            var parentId = entry.getValue();
+    private List<QuestionVarMappingRow> buildQuestionVarMappingRows(String modelCode,
+                                                                    String modelVersion,
+                                                                    List<Module> modules) {
 
-            var parent = questionsById.get(parentId);
-            var child = questionsById.get(childId);
+        List<QuestionVarMappingRow> result = new ArrayList<>();
 
-            if (parent != null && child != null) {
-                parent.addChild(child);
+        for (Module module : modules) {
+            for (Question parent : module.getQuestions()) {
+                for (Variable variable : parent.getVariables()) {
+                    result.add(new QuestionVarMappingRow(
+                            modelCode,
+                            modelVersion,
+                            module.getModuleKey(),
+                            parent.getQuestionKey(),
+                            variable.getVariableName(),
+                            "",
+                            variable.getPrefix(),
+                            "NA"
+                    ));
+                }
+
+                for (Question child : parent.getChildren()) {
+                    for (Variable variable : child.getVariables()) {
+                        result.add(new QuestionVarMappingRow(
+                                modelCode,
+                                modelVersion,
+                                module.getModuleKey(),
+                                child.getQuestionKey(),
+                                variable.getVariableName(),
+                                "",
+                                variable.getPrefix(),
+                                "NA"
+                        ));
+                    }
+                }
             }
         }
+
+        return result;
     }
 
-    private void applyQuestionOrders(Map<Long, Question> questionsById,
-                                     List<ParentQuestMapRow> parentRows) {
-        for (var row : parentRows) {
-            var question = questionsById.get(row.parentQuestionId());
-            if (question != null) {
-                question.setOrderInModule(row.questOrder());
-            }
+    private void appendModuleStrategyLines(StringBuilder sb,
+                                           String modelCode,
+                                           String modelVersion,
+                                           String moduleKey) {
+
+        sb.append(modelCode).append(',').append(modelVersion).append(',')
+          .append(moduleKey).append(",weight,,NA,NA,module_weight,,\n");
+        sb.append(modelCode).append(',').append(modelVersion).append(',')
+          .append(moduleKey).append(",weighted,,NA,NA,module_weighted,,\n");
+        sb.append(modelCode).append(',').append(modelVersion).append(',')
+          .append(moduleKey).append(",calc_sum,,NA,NA,module_score,,\n");
+    }
+
+    private String escape(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            String escaped = value.replace("\"", "\"\"");
+            return "\"" + escaped + "\"";
+        }
+        return value;
+    }
+}
+package com.rbs.risk.cradle.climate.migration.calculator.web;
+
+import com.rbs.risk.cradle.climate.migration.calculator.service.CalculatorCsvExportService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+@RestController
+@RequiredArgsConstructor
+public class CalculatorCsvExportController {
+
+    private final CalculatorCsvExportService csvExportService;
+
+    @GetMapping("/api/migration/calculator/export")
+    public void exportCsvs(@RequestParam String modelCode,
+                           @RequestParam String modelVersion,
+                           HttpServletResponse response) throws IOException {
+
+        String versionForFileName = modelVersion.replace('.', '_');
+
+        String strategyCsv = csvExportService.buildStrategyMappingCsv(modelCode, modelVersion);
+        String questionVarCsv = csvExportService.buildQuestionVarMappingCsv(modelCode, modelVersion);
+        String moduleStrategyCsv = csvExportService.buildModuleStrategyConfigCsv(modelCode, modelVersion);
+
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.setContentType("application/zip");
+        String zipFileName = modelCode + "_" + versionForFileName + "_export.zip";
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+                "attachment; filename=\"" + zipFileName + "\"");
+
+        try (ZipOutputStream zos = new ZipOutputStream(response.getOutputStream())) {
+
+            addEntry(zos,
+                    modelCode + "_" + versionForFileName + "_strategyMapping.csv",
+                    strategyCsv);
+
+            addEntry(zos,
+                    modelCode + "_" + versionForFileName + "_questionVarMapping.csv",
+                    questionVarCsv);
+
+            addEntry(zos,
+                    "module_strategy_config.csv",
+                    moduleStrategyCsv);
+
+            zos.finish();
         }
     }
 
-    private void pruneChildQuestionsFromModules(Map<Long, Module> modulesById,
-                                                Set<Long> childIds) {
-        for (var module : modulesById.values()) {
-            module.getQuestions().removeIf(q -> childIds.contains(q.getQuestionId()));
-        }
+    private void addEntry(ZipOutputStream zos, String fileName, String content) throws IOException {
+        ZipEntry entry = new ZipEntry(fileName);
+        zos.putNextEntry(entry);
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        zos.write(bytes);
+        zos.closeEntry();
     }
-
-    private void sortQuestionsAndChildren(Collection<Module> modules) {
-        for (var module : modules) {
-            module.getQuestions().sort(Question::compareTo);
-            for (var question : module.getQuestions()) {
-                question.getChildren().sort(Question::compareTo);
-            }
-        }
-    }
-
-    private record ModelBuildContext(
-            Map<Long, Module> modulesById,
-            Map<Long, Question> questionsById,
-            Map<Long, Long> parentByChildId
-    ) {}
 }
