@@ -1,1 +1,193 @@
-test
+package com.rbs.kestrel.calculator.crecrs.migration;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+
+public final class VariableMetadataRepository {
+
+    private static final String JDBC_URL = requireEnv("CRE_DB_URL");
+    private static final String JDBC_USER = requireEnv("CRE_DB_USER");
+    private static final String JDBC_PASSWORD = requireEnv("CRE_DB_PASSWORD");
+
+    private VariableMetadataRepository() {
+        // utility class
+    }
+
+    public static List<VariableMetadata> loadVariablesForModel(String modelCode, String modelVersion)
+            throws SQLException {
+
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USER, JDBC_PASSWORD)) {
+            long modelVerId = findModelVersionId(connection, modelCode, modelVersion);
+            Long linkedModelVerId = findLinkedModelVersionId(connection, modelVerId);
+
+            List<Long> idsToUse = new ArrayList<>();
+            idsToUse.add(modelVerId);
+            if (linkedModelVerId != null) {
+                idsToUse.add(linkedModelVerId);
+            }
+
+            return findVariables(connection, idsToUse);
+        }
+    }
+
+    private static long findModelVersionId(Connection connection, String modelCode, String modelVersion)
+            throws SQLException {
+
+        String sql = """
+                select cmv.model_ver_id
+                from cdf_model_version cmv
+                         join cdf_model cm on cmv.model_id = cm.model_id
+                where cm.model_code = ?
+                  and cmv.model_version = ?
+                """;
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, modelCode);
+            ps.setString(2, modelVersion);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    throw new IllegalStateException("No model_ver_id found for modelCode=" + modelCode
+                            + ", modelVersion=" + modelVersion);
+                }
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    private static Long findLinkedModelVersionId(Connection connection, long modelVerId)
+            throws SQLException {
+
+        String sql = """
+                select linked_model_ver_id
+                from cdf_linked_model_version_id
+                where model_ver_id = ?
+                """;
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setLong(1, modelVerId);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    long value = rs.getLong(1);
+                    return rs.wasNull() ? null : value;
+                }
+                return null;
+            }
+        }
+    }
+
+    private static List<VariableMetadata> findVariables(Connection connection, List<Long> modelVerIds)
+            throws SQLException {
+
+        if (modelVerIds.isEmpty()) {
+            return List.of();
+        }
+
+        String placeholders = String.join(", ", modelVerIds.stream().map(id -> "?").toList());
+
+        String sql = """
+                select distinct cv.variable_name,
+                                cv.prefix,
+                                cq.question_key,
+                                cm.module_key
+                from crs_variables cv
+                         join crs_questions cq on cv.question_id = cq.question_id
+                         join crs_module_map cmm on cv.variable_id = cmm.variable_id
+                         join cdf_module cm on cmm.module_id = cm.module_id
+                where cmm.model_ver_id in (%s)
+                  and cv.prefix not in ('score', 'weighted_score', 'weight',
+                                        'inputSummary', 'justificationComment', 'overrideFlag')
+                  and cv.expiry_event_id = 0
+                """.formatted(placeholders);
+
+        List<VariableMetadata> result = new ArrayList<>();
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            int index = 1;
+            for (Long id : modelVerIds) {
+                ps.setLong(index++, id);
+            }
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String variableName = rs.getString("variable_name");
+                    String prefix = rs.getString("prefix");
+                    String questionKey = rs.getString("question_key");
+                    String moduleKey = rs.getString("module_key");
+
+                    result.add(new VariableMetadata(variableName, prefix, questionKey, moduleKey));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static String requireEnv(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("Missing required environment variable: " + name);
+        }
+        return value;
+    }
+}
+
+package com.rbs.kestrel.calculator.crecrs.migration;
+
+public record VariableMetadata(
+        String variableName,
+        String prefix,
+        String questionKey,
+        String moduleKey
+) {}
+
+package com.rbs.kestrel.calculator.crecrs.migration;
+
+import java.sql.SQLException;
+import java.util.List;
+
+public final class CreCrsMigrationRunner {
+
+    public static void main(String[] args) {
+        // Later we can parse args; for now, hard-code SMC 1.0 as the first POC
+        String modelCode = "SMC";
+        String modelVersion = "1.0";
+
+        System.out.printf("Starting CRE-CRS migration helper for model %s %s%n",
+                modelCode, modelVersion);
+
+        try {
+            List<VariableMetadata> variables =
+                    VariableMetadataRepository.loadVariablesForModel(modelCode, modelVersion);
+
+            System.out.printf("Step 1: loaded %d variables from database.%n", variables.size());
+
+            // Temporary debug output – later this will feed into CSV generation
+            variables.forEach(v ->
+                    System.out.printf("variable=%s, prefix=%s, questionKey=%s, moduleKey=%s%n",
+                            v.variableName(), v.prefix(), v.questionKey(), v.moduleKey())
+            );
+
+            // TODO (next steps):
+            //  - build list from command classes for this model
+            //  - join with variables list
+            //  - generate 3 CSV files
+
+            System.out.println("Migration step 1 completed.");
+
+        } catch (SQLException e) {
+            System.err.println("Error during migration: " + e.getMessage());
+            e.printStackTrace(System.err);
+        }
+    }
+
+    private CreCrsMigrationRunner() {
+        // no instances
+    }
+}
