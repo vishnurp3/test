@@ -1,58 +1,108 @@
-package com.rbs.risk.cradle.climate.migration.calculator.repository;
+package com.rbs.risk.cradle.climate.migration.calculator.web;
 
-import com.rbs.risk.cradle.climate.migration.calculator.dto.ParentQuestMapRow;
+import com.rbs.risk.cradle.climate.migration.MigrationConstants;
+import com.rbs.risk.cradle.climate.migration.calculator.service.CalculatorCsvExportService;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
-import org.springframework.stereotype.Repository;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.Collections;
-import java.util.List;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
-@Repository
+@Slf4j
+@RestController
+@RequestMapping("/api/v1/migration")
+@Api(tags = "CDF Migration APIs")
 @RequiredArgsConstructor
-public class ParentQuestMapRepositoryImpl implements ParentQuestMapRepository {
+public class CalculatorCsvExportController {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final CalculatorCsvExportService csvExportService;
 
-    private static final RowMapper<ParentQuestMapRow> ROW_MAPPER = new RowMapper<>() {
-        @Override
-        public ParentQuestMapRow mapRow(ResultSet rs, int rowNum) throws SQLException {
-            long modelVerId = rs.getLong("model_version_id");
-            long moduleId = rs.getLong("module_id");
-            long parentQuestionId = rs.getLong("parent_question_id");
-            int questOrder = rs.getInt("quest_order");
+    @ApiOperation("Download calculator CSV bundle (strategy, question-var, module config) for a given model")
+    @GetMapping(
+            value = "/calculator/models/{modelCode}/versions/{modelVersion}/export",
+            produces = "application/zip"
+    )
+    public ResponseEntity<ByteArrayResource> exportCalculatorCsv(
+            @ApiParam("Model code")
+            @PathVariable String modelCode,
+            @ApiParam("Model version, e.g. 1.0")
+            @PathVariable String modelVersion) throws IOException {
 
-            return new ParentQuestMapRow(
-                    modelVerId,
-                    moduleId,
-                    parentQuestionId,
-                    questOrder
+        String versionForFileName = modelVersion.replace('.', '_');
+
+        String strategyCsv = csvExportService.buildStrategyMappingCsv(modelCode, modelVersion);
+        String questionVarCsv = csvExportService.buildQuestionVarMappingCsv(modelCode, modelVersion);
+        String moduleStrategyCsv = csvExportService.buildModuleStrategyConfigCsv(modelCode, modelVersion);
+
+        ByteArrayResource resource = new ByteArrayResource(
+                createZipBytes(modelCode, versionForFileName, strategyCsv, questionVarCsv, moduleStrategyCsv)
+        );
+
+        String zipFileName = modelCode + "_" + versionForFileName + "_export.zip";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(
+                HttpHeaders.CONTENT_DISPOSITION,
+                String.format(MigrationConstants.HEADER_CONTENT_DISPOSITION, zipFileName)
+        );
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .headers(headers)
+                .body(resource);
+    }
+
+    private byte[] createZipBytes(String modelCode,
+                                  String versionForFileName,
+                                  String strategyCsv,
+                                  String questionVarCsv,
+                                  String moduleStrategyCsv) throws IOException {
+
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             ZipOutputStream zos = new ZipOutputStream(baos, StandardCharsets.UTF_8)) {
+
+            addEntry(
+                    zos,
+                    modelCode + "_" + versionForFileName + "_strategyMapping.csv",
+                    strategyCsv
             );
+
+            addEntry(
+                    zos,
+                    modelCode + "_" + versionForFileName + "_questionVarMapping.csv",
+                    questionVarCsv
+            );
+
+            addEntry(
+                    zos,
+                    "module_strategy_config.csv",
+                    moduleStrategyCsv
+            );
+
+            zos.finish();
+            return baos.toByteArray();
         }
-    };
+    }
 
-    @Override
-    public List<ParentQuestMapRow> findParentQuestMap(List<Long> modelVerIds) {
-        if (modelVerIds == null || modelVerIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        String placeholders = String.join(", ", Collections.nCopies(modelVerIds.size(), "?"));
-
-        String sql = """
-                select model_version_id,
-                       module_id,
-                       parent_question_id,
-                       quest_order
-                from crs_parent_quest_map
-                where model_version_id in (%s)
-                  and section_id = 3
-                """.formatted(placeholders);
-
-        Object[] params = modelVerIds.toArray();
-        return jdbcTemplate.query(sql, ROW_MAPPER, params);
+    private void addEntry(ZipOutputStream zos, String fileName, String content) throws IOException {
+        ZipEntry entry = new ZipEntry(fileName);
+        zos.putNextEntry(entry);
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        zos.write(bytes);
+        zos.closeEntry();
     }
 }
