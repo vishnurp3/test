@@ -1,68 +1,58 @@
-package com.rbs.risk.cradle.climate.migration.calculator.domain;
+package com.rbs.risk.cradle.climate.migration.calculator.repository;
 
-import lombok.Getter;
+import com.rbs.risk.cradle.climate.migration.calculator.dto.ParentQuestMapRow;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
 
-import java.util.ArrayList;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
-import java.util.stream.Collectors;
 
-@Getter
-public class Question implements Comparable<Question> {
+@Repository
+@RequiredArgsConstructor
+public class ParentQuestMapRepositoryImpl implements ParentQuestMapRepository {
 
-    private final long questionId;
-    private final String questionKey;
-    private final List<Question> children = new ArrayList<>();
-    private final List<Variable> variables = new ArrayList<>();
-    private int orderInModule;
+    private final JdbcTemplate jdbcTemplate;
 
-    public Question(long questionId, String questionKey) {
-        this.questionId = questionId;
-        this.questionKey = questionKey;
-    }
+    private static final RowMapper<ParentQuestMapRow> ROW_MAPPER = new RowMapper<>() {
+        @Override
+        public ParentQuestMapRow mapRow(ResultSet rs, int rowNum) throws SQLException {
+            long modelVerId = rs.getLong("model_version_id");
+            long moduleId = rs.getLong("module_id");
+            long parentQuestionId = rs.getLong("parent_question_id");
+            int questOrder = rs.getInt("quest_order");
 
-    public void addChild(Question child) {
-        if (!children.contains(child)) {
-            children.add(child);
+            return new ParentQuestMapRow(
+                    modelVerId,
+                    moduleId,
+                    parentQuestionId,
+                    questOrder
+            );
         }
-    }
-
-    public void addVariable(Variable variable) {
-        variables.add(variable);
-    }
-
-    public void setOrderInModule(int orderInModule) {
-        this.orderInModule = orderInModule;
-    }
-
-    public String computeChildQuestionKeys() {
-        if (children.isEmpty()) {
-            return "";
-        }
-        return children.stream()
-                .map(Question::getQuestionKey)
-                .distinct()
-                .collect(Collectors.joining("|"));
-    }
+    };
 
     @Override
-    public int compareTo(Question other) {
-        int cmp = Integer.compare(this.orderInModule, other.orderInModule);
-        if (cmp != 0) {
-            return cmp;
+    public List<ParentQuestMapRow> findParentQuestMap(List<Long> modelVerIds) {
+        if (modelVerIds == null || modelVerIds.isEmpty()) {
+            return Collections.emptyList();
         }
-        return Long.compare(this.questionId, other.questionId);
-    }
 
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Question question)) return false;
-        return questionId == question.questionId;
-    }
+        String placeholders = String.join(", ", Collections.nCopies(modelVerIds.size(), "?"));
 
-    @Override
-    public int hashCode() {
-        return Objects.hash(questionId);
+        String sql = """
+                select model_version_id,
+                       module_id,
+                       parent_question_id,
+                       quest_order
+                from crs_parent_quest_map
+                where model_version_id in (%s)
+                  and section_id = 3
+                """.formatted(placeholders);
+
+        Object[] params = modelVerIds.toArray();
+        return jdbcTemplate.query(sql, ROW_MAPPER, params);
     }
 }
