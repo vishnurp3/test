@@ -12,13 +12,13 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * Generates:
- * - MERGE script to insert a new model version row into CDF_MODEL_VERSION
- * - UPDATE script to expire the current active row and update MODEL_TABLE
- * - ROLLBACK script to undo the above
+ * Generates SQL related to:
+ *  - inserting the new model version
+ *  - expiring the old active version and updating MODEL_TABLE
+ *  - rollback logic
  *
- * This does NOT touch GitLab or any external files; it only returns
- * in-memory "files" that your controller can print as plain text.
+ * All SELECT clauses are single-line and have **no aliases** so user can directly
+ * copy-paste into the existing merge script manually.
  */
 @Component
 public class ModelVersionMigrationGenerator implements SqlGenerator {
@@ -31,18 +31,23 @@ public class ModelVersionMigrationGenerator implements SqlGenerator {
 
     @Override
     public List<GeneratedSqlFile> generate(SqlGenerationContext ctx) {
-        ModelVersionInfo versionInfo =
+
+        ModelVersionInfo info =
                 modelVersionService.computeModelVersionInfo(ctx.getModelCode(), ctx.getUpgradeType());
 
-        String baseFolder = ctx.getRootOutputFolder() + "/db/Model/CDF/Data";
+        String folder = ctx.getRootOutputFolder() + "/db/Model/CDF/Data";
 
         List<GeneratedSqlFile> files = new ArrayList<>();
-        files.add(buildMergeFile(ctx, versionInfo, baseFolder));
-        files.add(buildUpdateFile(ctx, versionInfo, baseFolder));
-        files.add(buildRollbackFile(ctx, versionInfo, baseFolder));
+        files.add(buildMergeFile(ctx, info, folder));
+        files.add(buildUpdateFile(ctx, info, folder));
+        files.add(buildRollbackFile(ctx, info, folder));
+
         return files;
     }
 
+    // ------------------------------------------------------------
+    // MERGE SCRIPT
+    // ------------------------------------------------------------
     private GeneratedSqlFile buildMergeFile(SqlGenerationContext ctx,
                                             ModelVersionInfo info,
                                             String folder) {
@@ -50,44 +55,34 @@ public class ModelVersionMigrationGenerator implements SqlGenerator {
         String modelCode = ctx.getModelCode();
         long newId = info.getNewModelVerId();
         String newVersion = info.getNewModelVersion();
+        long modelId = info.getActiveModelId();
+        String modelTable = modelCode + "_MODEL_VALUES";
 
-        String tableName = modelCode + "_MODEL_VALUES";
+        // SINGLE-LINE SELECT, NO ALIASES
+        String oneLineSelect =
+                "SELECT " + newId + ", '" + newVersion + "', " + modelId + ", '" + modelTable + "' FROM DUAL";
 
-        // NOTE:
-        // - MODEL_ID is left as a placeholder; you can replace <TODO_MODEL_ID>
-        //   with the correct value or derive it later.
-        // - You can also UNION ALL more SELECTs manually if needed.
         String sql = """
                 SET DEFINE OFF;
                 MERGE INTO CDF_MODEL_VERSION cmv
                 USING
                 (
-                    -- TODO: replace <TODO_MODEL_ID> with the correct MODEL_ID
-                    SELECT %d MODEL_VER_ID,
-                           '%s' MODEL_VERSION,
-                           <TODO_MODEL_ID> MODEL_ID,
-                           '%s' MODEL_TABLE
-                    FROM DUAL
+                    %s
                 ) x
                 ON (x.MODEL_VER_ID = cmv.MODEL_VER_ID)
-                -- Uncomment below update block if you want to update existing rows in UAT, etc.
-                --WHEN MATCHED THEN
-                --  UPDATE
-                --  SET
-                --      MODEL_VERSION = x.MODEL_VERSION,
-                --      MODEL_ID      = x.MODEL_ID,
-                --      MODEL_TABLE   = x.MODEL_TABLE
                 WHEN NOT MATCHED THEN
                     INSERT (MODEL_VER_ID, MODEL_VERSION, MODEL_ID, MODEL_TABLE)
                     VALUES (x.MODEL_VER_ID, x.MODEL_VERSION, x.MODEL_ID, x.MODEL_TABLE);
-                                
                 COMMIT;
-                """.formatted(newId, newVersion, tableName);
+                """.formatted(oneLineSelect);
 
         String fileName = modelCode + "_MODEL_VERSION_MERGE.sql";
         return new GeneratedSqlFile(folder, fileName, sql);
     }
 
+    // ------------------------------------------------------------
+    // UPDATE SCRIPT
+    // ------------------------------------------------------------
     private GeneratedSqlFile buildUpdateFile(SqlGenerationContext ctx,
                                              ModelVersionInfo info,
                                              String folder) {
@@ -96,42 +91,43 @@ public class ModelVersionMigrationGenerator implements SqlGenerator {
         String modelCode = ctx.getModelCode();
 
         long activeId = info.getActiveModelVerId();
-        List<Long> allOldIds = info.getExistingModelVerIds(); // all existing ids (old ones)
+        List<Long> oldIds = info.getExistingModelVerIds(); // excludes new one
 
-        String inClause = allOldIds.stream()
+        String inClause = oldIds.stream()
                 .map(String::valueOf)
                 .collect(Collectors.joining(", "));
 
-        String oldTableName = modelCode + "_MODEL_DATA";
-        String newTableName = modelCode + "_MODEL_VALUES";
+        String oldTable = modelCode + "_MODEL_DATA";
+        String newTable = modelCode + "_MODEL_VALUES";
 
-        // Placeholder for expiry_event_id sequence: you can replace <YOUR_SEQ>.NEXTVAL
         String sql = """
                 -- Expire currently active model version
                 UPDATE CDF_MODEL_VERSION
-                   SET EXPIRY_EVENT_ID   = <YOUR_SEQ>.NEXTVAL,  -- TODO: replace with actual sequence name
+                   SET EXPIRY_EVENT_ID   = CDF_EXPIRY_EVENT_ID_SEQ.nextval,
                        EXPIRY_EVENT_DATE = SYSDATE
                  WHERE MODEL_VER_ID = %d;
-                                
-                -- Update MODEL_TABLE from %s to %s for all existing versions (old ones)
+
+                -- Update MODEL_TABLE from %s to %s for all previous versions
                 UPDATE CDF_MODEL_VERSION
                    SET MODEL_TABLE = '%s'
                  WHERE MODEL_VER_ID IN (%s);
-                                
+
                 COMMIT;
                 """.formatted(
                 activeId,
-                oldTableName,
-                newTableName,
-                newTableName,
+                oldTable,
+                newTable,
+                newTable,
                 inClause
         );
 
-        // "Update scripts all should start with the jira name followed by the update and the table name"
         String fileName = "%s_Update_CDF_MODEL_VERSION.sql".formatted(jira);
         return new GeneratedSqlFile(folder, fileName, sql);
     }
 
+    // ------------------------------------------------------------
+    // ROLLBACK SCRIPT
+    // ------------------------------------------------------------
     private GeneratedSqlFile buildRollbackFile(SqlGenerationContext ctx,
                                                ModelVersionInfo info,
                                                String folder) {
@@ -141,35 +137,34 @@ public class ModelVersionMigrationGenerator implements SqlGenerator {
 
         long activeId = info.getActiveModelVerId();
         long newId = info.getNewModelVerId();
-        List<Long> allOldIds = info.getExistingModelVerIds();
+        List<Long> oldIds = info.getExistingModelVerIds();
 
-        String inClause = allOldIds.stream()
+        String inClause = oldIds.stream()
                 .map(String::valueOf)
                 .collect(Collectors.joining(", "));
 
-        String oldTableName = modelCode + "_MODEL_DATA";
+        String oldTable = modelCode + "_MODEL_DATA";
 
         String sql = """
-                -- Rollback: delete newly inserted model version
+                -- Delete newly inserted model version
                 DELETE FROM CDF_MODEL_VERSION
                  WHERE MODEL_VER_ID = %d;
-                                
-                -- Rollback: reset MODEL_TABLE back to %s for all previous versions
+
+                -- Reset MODEL_TABLE for all previous versions
                 UPDATE CDF_MODEL_VERSION
                    SET MODEL_TABLE = '%s'
                  WHERE MODEL_VER_ID IN (%s);
-                                
-                -- Rollback: un-expire the previously active model version
+
+                -- Rollback: un-expire the previously active version
                 UPDATE CDF_MODEL_VERSION
                    SET EXPIRY_EVENT_ID   = 0,
-                       EXPIRY_EVENT_DATE = TO_DATE('01-JAN-99', 'DD-MON-RR')
+                       EXPIRY_EVENT_DATE = TO_DATE('01-JAN-9999','DD-MON-RRRR')
                  WHERE MODEL_VER_ID = %d;
-                                
+
                 COMMIT;
                 """.formatted(
                 newId,
-                oldTableName,
-                oldTableName,
+                oldTable,
                 inClause,
                 activeId
         );
