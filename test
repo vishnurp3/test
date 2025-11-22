@@ -1,1 +1,139 @@
-test
+package com.rbs.risk.cradle.climate.migration.service;
+
+import com.rbs.risk.cradle.climate.migration.domain.GeneratedSqlFile;
+import org.springframework.stereotype.Service;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+/**
+ * Responsible for transforming generated SQL files into HTTP-ready payloads.
+ * For now, only plain-text preview is used.
+ */
+@Service
+public class MigrationResponseFormatter {
+
+    /**
+     * Builds a plain-text representation of all generated SQL files.
+     * Each file is printed as:
+     *
+     * === File: <folder>/<file> ===
+     *
+     * <sql content>
+     *
+     * ------------------------------------------------------------
+     */
+    public String formatAsPreviewText(List<GeneratedSqlFile> files) {
+        StringBuilder sb = new StringBuilder();
+
+        for (GeneratedSqlFile file : files) {
+            sb.append("=== File: ")
+              .append(normalizePath(file.getFolderPath()))
+              .append("/")
+              .append(file.getFileName())
+              .append(" ===")
+              .append(System.lineSeparator())
+              .append(System.lineSeparator());
+
+            String content = file.getContent();
+            if (content != null && !content.isBlank()) {
+                sb.append(content);
+            } else {
+                sb.append("-- (empty file)");
+            }
+
+            sb.append(System.lineSeparator())
+              .append(System.lineSeparator())
+              .append("------------------------------------------------------------")
+              .append(System.lineSeparator())
+              .append(System.lineSeparator());
+        }
+
+        return sb.toString();
+    }
+
+    private String normalizePath(String folderPath) {
+        if (folderPath == null) {
+            return "";
+        }
+        // Remove leading/trailing slashes for cleaner output
+        return folderPath.replaceAll("^/+", "").replaceAll("/+$", "");
+    }
+}
+package com.rbs.risk.cradle.climate.migration.controller;
+
+import com.rbs.risk.cradle.climate.migration.api.MigrationRequest;
+import com.rbs.risk.cradle.climate.migration.domain.GeneratedSqlFile;
+import com.rbs.risk.cradle.climate.migration.service.MigrationEngine;
+import com.rbs.risk.cradle.climate.migration.service.MigrationResponseFormatter;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
+import io.swagger.annotations.ApiResponse;
+import io.swagger.annotations.ApiResponses;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/v1/migration")
+@Api(tags = "Migration", description = "Versioned endpoints for generating migration SQL scripts")
+public class MigrationController {
+
+    private final MigrationEngine migrationEngine;
+    private final MigrationResponseFormatter responseFormatter;
+
+    public MigrationController(MigrationEngine migrationEngine,
+                               MigrationResponseFormatter responseFormatter) {
+        this.migrationEngine = migrationEngine;
+        this.responseFormatter = responseFormatter;
+    }
+
+    @PostMapping(
+            value = "/run",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.TEXT_PLAIN_VALUE
+    )
+    @ApiOperation(
+            value = "Generate migration SQL scripts (preview as plain text)",
+            notes = "Generates all SQL files for the given migration request according to the configured recipe " +
+                    "and returns a plain-text preview: each file path followed by its SQL content."
+    )
+    @ApiResponses({
+            @ApiResponse(code = 200, message = "SQL generated successfully"),
+            @ApiResponse(code = 400, message = "Invalid request payload"),
+            @ApiResponse(code = 500, message = "Error while generating SQL")
+    })
+    public ResponseEntity<String> runMigration(
+            @ApiParam(
+                    value = "Migration request payload",
+                    required = true
+            )
+            @RequestBody MigrationRequest request
+    ) {
+
+        // 1. Generate SQL files using the migration engine
+        List<GeneratedSqlFile> files = migrationEngine.generateScripts(request);
+
+        // 2. Format them as a plain-text preview
+        String body = responseFormatter.formatAsPreviewText(files);
+
+        return ResponseEntity
+                .ok()
+                .contentType(new MediaType("text", "plain", StandardCharsets.UTF_8))
+                .body(body);
+    }
+}
+{
+  "modelCode": "SRS",
+  "modelType": "CRS",
+  "jira": "WCR-15203",
+  "release": "R12",
+  "upgradeType": "MINOR",
+  "scenario": "MIGRATE_MODEL_WITH_INCREMENT",
+  "rootOutputFolder": "migration-output",
+  "featureBranch": "feature/my-branch"
+}
