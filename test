@@ -1,29 +1,41 @@
-import org.jasypt.util.text.BasicTextEncryptor;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.jasypt.encryption.StringEncryptor;
+import org.springframework.stereotype.Component;
+import org.springframework.boot.CommandLineRunner;
 
-public class SimpleJasypt {
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class JasyptStartupLogger implements CommandLineRunner {
 
-    public static String encrypt(String secretKey, String plainText) {
-        BasicTextEncryptor encryptor = new BasicTextEncryptor();
-        encryptor.setPassword(secretKey);
-        return encryptor.encrypt(plainText);
-    }
+    private final StringEncryptor jasyptStringEncryptor;
 
-    public static String decrypt(String secretKey, String encryptedText) {
-        BasicTextEncryptor encryptor = new BasicTextEncryptor();
-        encryptor.setPassword(secretKey);
-        return encryptor.decrypt(encryptedText);
-    }
+    @Override
+    public void run(String... args) {
+        // Example plain text to encrypt
+        String samplePlain = "mySecretToEncrypt";
 
-    public static void main(String[] args) {
-        String secretKey = "YOUR_SECRET_KEY";  // same as jasypt.encryptor.password
-        String plain = "mypassword";
+        // Encrypt using same config/algorithm as your app
+        String encrypted = jasyptStringEncryptor.encrypt(samplePlain);
+        log.info("Plain           : {}", samplePlain);
+        log.info("Encrypted (raw) : {}", encrypted);
+        log.info("Store as        : ENC({})", encrypted);
 
-        // Encrypt
-        String encrypted = encrypt(secretKey, plain);
-        System.out.println("Encrypted: " + encrypted);
-        System.out.println("Store as: ENC(" + encrypted + ")");
+        // Decrypt back to verify
+        String decrypted = jasyptStringEncryptor.decrypt(encrypted);
+        log.info("Decrypted back  : {}", decrypted);
 
-        // Decrypt
-        System.out.println("Decrypted: " + decrypt(secretKey, encrypted));
+        // Optionally: decrypt an existing value you paste in
+        String existingEnc = "ENC(pasteYourExistingCipherHere)";
+        String cleaned = existingEnc.replaceFirst("^ENC\\(", "")
+                                    .replaceFirst("\\)$", "");
+        // Wrap in try/catch so startup doesn't die if it's wrong
+        try {
+            String existingPlain = jasyptStringEncryptor.decrypt(cleaned);
+            log.info("Existing ENC(...) decrypted to: {}", existingPlain);
+        } catch (Exception e) {
+            log.warn("Could not decrypt existing ENC(...) value: {}", e.getMessage());
+        }
     }
 }
