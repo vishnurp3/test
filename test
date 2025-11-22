@@ -1,1 +1,72 @@
-test
+import org.jasypt.encryption.pbe.StandardPBEStringEncryptor;
+
+public class JasyptUtil {
+
+    // Configure algorithm to match what you use in Spring Boot (example below)
+    private static final String ALGORITHM = "PBEWithMD5AndDES";
+
+    /**
+     * Creates and configures a Jasypt encryptor with the given secret key.
+     */
+    private static StandardPBEStringEncryptor createEncryptor(String secretKey) {
+        StandardPBEStringEncryptor encryptor = new StandardPBEStringEncryptor();
+        encryptor.setPassword(secretKey);   // Jasypt "password" = your secret key
+        encryptor.setAlgorithm(ALGORITHM);  // Must match application side
+        return encryptor;
+    }
+
+    /**
+     * Encrypts plain text and returns ONLY the cipher text (without ENC()).
+     * You can then store it as ENC(<cipherText>) in application.properties.
+     */
+    public static String encrypt(String secretKey, String plainText) {
+        StandardPBEStringEncryptor encryptor = createEncryptor(secretKey);
+        return encryptor.encrypt(plainText);
+    }
+
+    /**
+     * Decrypts a cipher text.
+     * Accepts either plain cipher text or the ENC(<cipherText>) format.
+     */
+    public static String decrypt(String secretKey, String encrypted) {
+        String cipherText = extractCipher(encrypted);
+        StandardPBEStringEncryptor encryptor = createEncryptor(secretKey);
+        return encryptor.decrypt(cipherText);
+    }
+
+    /**
+     * If the value is in ENC(<cipherText>) format, extract the inner text.
+     * Otherwise, return it as-is.
+     */
+    private static String extractCipher(String value) {
+        if (value == null) {
+            return null;
+        }
+        value = value.trim();
+        if (value.startsWith("ENC(") && value.endsWith(")")) {
+            return value.substring(4, value.length() - 1);
+        }
+        return value;
+    }
+
+    // Simple demo main
+    public static void main(String[] args) {
+        // TODO: replace with your values
+        String secretKey = "your-jasypt-secret-key";
+        String plainPassword = "my-secret-password";
+
+        // Encrypt
+        String cipher = encrypt(secretKey, plainPassword);
+        System.out.println("Encrypted (raw): " + cipher);
+        System.out.println("Store in application.properties as: ENC(" + cipher + ")");
+
+        // Decrypt from raw cipher
+        String decrypted1 = decrypt(secretKey, cipher);
+        System.out.println("Decrypted from raw: " + decrypted1);
+
+        // Decrypt from ENC(...) format
+        String encFormat = "ENC(" + cipher + ")";
+        String decrypted2 = decrypt(secretKey, encFormat);
+        System.out.println("Decrypted from ENC(...): " + decrypted2);
+    }
+}
