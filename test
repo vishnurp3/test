@@ -1,41 +1,241 @@
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.jasypt.encryption.StringEncryptor;
+package com.rbs.risk.cradle.climate.migration.gitlab;
+
+/**
+ * Abstraction to fetch raw file contents from GitLab.
+ */
+public interface GitlabFileClient {
+
+    /**
+     * Fetch the raw contents of a file from GitLab.
+     *
+     * @param branch   the Git branch / ref (e.g. feature branch)
+     * @param filePath the path inside the repository (URL-encoded by implementation)
+     * @return file contents as String
+     */
+    String fetchFile(String branch, String filePath);
+}
+package com.rbs.risk.cradle.climate.migration.gitlab;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+@ConfigurationProperties(prefix = "cradle.migration.gitlab")
+public class GitlabProperties {
+
+    /**
+     * Base URL to GitLab API, e.g. https://gitlab.mycompany.com/api/v4
+     */
+    private String baseUrl;
+
+    /**
+     * Numeric or URL-encoded project id.
+     */
+    private String projectId;
+
+    /**
+     * Private access token (will be encrypted via Jasypt).
+     */
+    private String privateToken;
+
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
+    public void setBaseUrl(String baseUrl) {
+        this.baseUrl = baseUrl;
+    }
+
+    public String getProjectId() {
+        return projectId;
+    }
+
+    public void setProjectId(String projectId) {
+        this.projectId = projectId;
+    }
+
+    public String getPrivateToken() {
+        return privateToken;
+    }
+
+    public void setPrivateToken(String privateToken) {
+        this.privateToken = privateToken;
+    }
+}
+package com.rbs.risk.cradle.climate.migration.gitlab;
+
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableConfigurationProperties(GitlabProperties.class)
+public class GitlabConfig {
+}
+package com.rbs.risk.cradle.climate.migration.gitlab;
+
+import com.rbs.risk.cradle.climate.migration.gitlab.GitlabFileClient;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
-import org.springframework.boot.CommandLineRunner;
+import org.springframework.web.client.RestTemplate;
 
-@Slf4j
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+
 @Component
-@RequiredArgsConstructor
-public class JasyptStartupLogger implements CommandLineRunner {
+public class GitlabFileClientImpl implements GitlabFileClient {
 
-    private final StringEncryptor jasyptStringEncryptor;
+    private final GitlabProperties properties;
+    private final RestTemplate restTemplate;
+
+    public GitlabFileClientImpl(GitlabProperties properties) {
+        this.properties = properties;
+        this.restTemplate = new RestTemplate();
+    }
 
     @Override
-    public void run(String... args) {
-        // Example plain text to encrypt
-        String samplePlain = "mySecretToEncrypt";
+    public String fetchFile(String branch, String filePath) {
+        String encodedPath = urlEncode(filePath);
+        String encodedRef = urlEncode(branch);
 
-        // Encrypt using same config/algorithm as your app
-        String encrypted = jasyptStringEncryptor.encrypt(samplePlain);
-        log.info("Plain           : {}", samplePlain);
-        log.info("Encrypted (raw) : {}", encrypted);
-        log.info("Store as        : ENC({})", encrypted);
+        // Example GitLab API URL:
+        // GET /projects/:id/repository/files/:file_path/raw?ref=branch
+        String url = String.format("%s/projects/%s/repository/files/%s/raw?ref=%s",
+                properties.getBaseUrl(),
+                properties.getProjectId(),
+                encodedPath,
+                encodedRef
+        );
 
-        // Decrypt back to verify
-        String decrypted = jasyptStringEncryptor.decrypt(encrypted);
-        log.info("Decrypted back  : {}", decrypted);
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("PRIVATE-TOKEN", properties.getPrivateToken());
 
-        // Optionally: decrypt an existing value you paste in
-        String existingEnc = "ENC(pasteYourExistingCipherHere)";
-        String cleaned = existingEnc.replaceFirst("^ENC\\(", "")
-                                    .replaceFirst("\\)$", "");
-        // Wrap in try/catch so startup doesn't die if it's wrong
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                entity,
+                String.class
+        );
+
+        return response.getBody();
+    }
+
+    private String urlEncode(String value) {
         try {
-            String existingPlain = jasyptStringEncryptor.decrypt(cleaned);
-            log.info("Existing ENC(...) decrypted to: {}", existingPlain);
-        } catch (Exception e) {
-            log.warn("Could not decrypt existing ENC(...) value: {}", e.getMessage());
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
+        } catch (UnsupportedEncodingException e) {
+            throw new IllegalStateException("Failed to URL-encode: " + value, e);
         }
+    }
+}
+cradle.migration.gitlab.base-url=https://gitlab.yourbank.com/api/v4
+cradle.migration.gitlab.project-id=12345
+cradle.migration.gitlab.private-token=ENC(yourEncryptedTokenHere)
+
+package com.rbs.risk.cradle.climate.migration.generator;
+
+import com.rbs.risk.cradle.climate.migration.domain.GeneratedSqlFile;
+import com.rbs.risk.cradle.climate.migration.domain.ModelVersionInfo;
+import com.rbs.risk.cradle.climate.migration.domain.SqlGenerationContext;
+import com.rbs.risk.cradle.climate.migration.domain.ModelVersionService;
+import com.rbs.risk.cradle.climate.migration.gitlab.GitlabFileClient;
+import com.rbs.risk.cradle.climate.migration.spi.SqlGenerator;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+
+@Component
+public class ModelVersionMigrationGenerator implements SqlGenerator {
+
+    private final ModelVersionService modelVersionService;
+    private final GitlabFileClient gitlabFileClient;
+
+    public ModelVersionMigrationGenerator(ModelVersionService modelVersionService,
+                                          GitlabFileClient gitlabFileClient) {
+        this.modelVersionService = modelVersionService;
+        this.gitlabFileClient = gitlabFileClient;
+    }
+
+    @Override
+    public List<GeneratedSqlFile> generate(SqlGenerationContext ctx) {
+        // 1) Compute model version info (from DB)
+        ModelVersionInfo versionInfo =
+                modelVersionService.computeModelVersionInfo(ctx.getModelCode(), ctx.getUpgradeType());
+
+        // 2) Fetch existing MERGE script from GitLab
+        String branch = ctx.getFeatureBranch();
+        String filePathInRepo = buildModelVersionMergeFilePath(ctx.getModelCode());
+
+        String existingMergeScript = gitlabFileClient.fetchFile(branch, filePathInRepo);
+
+        // 3) Build updated merge script (placeholder for your real logic)
+        String updatedMergeScript = buildUpdatedMergeScript(existingMergeScript, ctx, versionInfo);
+
+        // 4) Construct rollback script (or also GitLab-based if needed) – placeholder
+        String rollbackScript = buildRollbackScript(versionInfo, ctx);
+
+        String baseFolder = ctx.getRootOutputFolder() + "/db/Model/CDF/Data";
+        String mergeFileName = ctx.getModelCode() + "_ModelVersion_Merge.sql";
+        String rollbackFileName = ctx.getModelCode() + "_ModelVersion_Merge_Rollback.sql";
+
+        GeneratedSqlFile mergeFile = new GeneratedSqlFile(
+                baseFolder,
+                mergeFileName,
+                updatedMergeScript
+        );
+
+        GeneratedSqlFile rollbackFile = new GeneratedSqlFile(
+                baseFolder,
+                rollbackFileName,
+                rollbackScript
+        );
+
+        return List.of(mergeFile, rollbackFile);
+    }
+
+    /**
+     * Build the path inside the GitLab repository where the existing merge script lives.
+     * You can centralize the common prefix here and only vary the file name per generator.
+     */
+    private String buildModelVersionMergeFilePath(String modelCode) {
+        // Example: "db/Model/CDF/Data/SRS_ModelVersion_Merge.sql"
+        // Adjust to match your actual repo structure and naming.
+        return "db/Model/CDF/Data/" + modelCode + "_ModelVersion_Merge.sql";
+    }
+
+    /**
+     * Here you will parse the existing script and append/update the required SELECT / UNION ALL
+     * based on model version info and your business rules.
+     */
+    private String buildUpdatedMergeScript(String existing,
+                                           SqlGenerationContext ctx,
+                                           ModelVersionInfo info) {
+        // TODO: implement real logic.
+        // For now, just placeholder to show wiring:
+
+        StringBuilder sb = new StringBuilder(existing);
+        sb.append("\n\n-- TODO: appended by generator for model ")
+          .append(ctx.getModelCode())
+          .append(", new model_ver_id=")
+          .append(info.getNewModelVerId())
+          .append(", new model_version=")
+          .append(info.getNewModelVersion())
+          .append("\n");
+
+        // Later you’ll insert UNION ALL SELECT blocks etc.
+        return sb.toString();
+    }
+
+    private String buildRollbackScript(ModelVersionInfo info, SqlGenerationContext ctx) {
+        // TODO: implement real rollback logic.
+        // This is just a placeholder.
+        return """
+            -- TODO: rollback for model version merge
+            -- Example:
+            -- DELETE FROM cdf_model_version WHERE model_ver_id = %d;
+            """.formatted(info.getNewModelVerId());
     }
 }
