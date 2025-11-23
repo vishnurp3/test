@@ -1,1 +1,108 @@
-test
+package com.rbs.risk.cradle.climate.migration.generator;
+
+import com.rbs.risk.cradle.climate.migration.domain.GeneratedSqlFile;
+import com.rbs.risk.cradle.climate.migration.domain.ModelVersionInfo;
+import com.rbs.risk.cradle.climate.migration.domain.ModelVersionService;
+import com.rbs.risk.cradle.climate.migration.domain.SqlGenerationContext;
+import com.rbs.risk.cradle.climate.migration.spi.SqlGenerator;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * Generates MERGE + rollback scripts for CDF_LINKED_MODEL_VERSION_ID:
+ *
+ * MERGE:
+ *   - one row:  (newModelVerId, null)
+ *   - one row per old model version id: (newModelVerId, oldModelVerId)
+ *
+ * Rollback:
+ *   - delete all rows where MODEL_VER_ID = newModelVerId
+ */
+@Component
+public class LinkedModelVersionMigrationGenerator implements SqlGenerator {
+
+    private final ModelVersionService modelVersionService;
+
+    public LinkedModelVersionMigrationGenerator(ModelVersionService modelVersionService) {
+        this.modelVersionService = modelVersionService;
+    }
+
+    @Override
+    public List<GeneratedSqlFile> generate(SqlGenerationContext ctx) {
+
+        ModelVersionInfo info =
+                modelVersionService.computeModelVersionInfo(ctx.getModelCode(), ctx.getUpgradeType());
+
+        String folder = ctx.getRootOutputFolder() + "/db/Model/CDF/Data";
+
+        List<GeneratedSqlFile> files = new ArrayList<>();
+        files.add(buildMergeFile(ctx, info, folder));
+        files.add(buildRollbackFile(ctx, info, folder));
+
+        return files;
+    }
+
+    // ------------------------------------------------------------
+    // MERGE SCRIPT
+    // ------------------------------------------------------------
+    private GeneratedSqlFile buildMergeFile(SqlGenerationContext ctx,
+                                            ModelVersionInfo info,
+                                            String folder) {
+
+        long newId = info.getNewModelVerId();
+        List<Long> oldIds = info.getExistingModelVerIds();
+
+        // Each SELECT must be a single line and have NO aliases.
+        List<String> selects = new ArrayList<>();
+        // New version with no linked id
+        selects.add("SELECT " + newId + ", null FROM DUAL");
+
+        // New version linked to each old version id
+        for (Long oldId : oldIds) {
+            selects.add("SELECT " + newId + ", " + oldId + " FROM DUAL");
+        }
+
+        String usingBlock = selects.stream()
+                .collect(Collectors.joining("\n    UNION ALL\n    "));
+
+        String sql = """
+                SET DEFINE OFF;
+                MERGE INTO CDF_LINKED_MODEL_VERSION_ID clmv
+                USING (
+                    %s
+                ) x
+                ON (x.MODEL_VER_ID = clmv.MODEL_VER_ID)
+                WHEN NOT MATCHED THEN
+                    INSERT (MODEL_VER_ID, LINKED_MODEL_VER_ID)
+                    VALUES (x.MODEL_VER_ID, x.LINKED_MODEL_VER_ID);
+                COMMIT;
+                """.formatted(usingBlock);
+
+        String fileName = ctx.getModelCode() + "_LINKED_MODEL_VERSION_ID_MERGE.sql";
+        return new GeneratedSqlFile(folder, fileName, sql);
+    }
+
+    // ------------------------------------------------------------
+    // ROLLBACK SCRIPT
+    // ------------------------------------------------------------
+    private GeneratedSqlFile buildRollbackFile(SqlGenerationContext ctx,
+                                               ModelVersionInfo info,
+                                               String folder) {
+
+        String jira = ctx.getJira();
+        long newId = info.getNewModelVerId();
+
+        String sql = """
+                -- Rollback: delete linked model version rows for the new model version id
+                DELETE FROM CDF_LINKED_MODEL_VERSION_ID
+                 WHERE MODEL_VER_ID = %d;
+                COMMIT;
+                """.formatted(newId);
+
+        String fileName = "%s_Rollback_CDF_LINKED_MODEL_VERSION_ID.sql".formatted(jira);
+        return new GeneratedSqlFile(folder, fileName, sql);
+    }
+}
