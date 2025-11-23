@@ -1,1 +1,151 @@
-test
+package com.rbs.risk.cradle.climate.migration.generator;
+
+import com.rbs.risk.cradle.climate.migration.domain.GeneratedSqlFile;
+import com.rbs.risk.cradle.climate.migration.domain.SqlGenerationContext;
+import com.rbs.risk.cradle.climate.migration.parentquest.ParentQuestCsvRecord;
+import com.rbs.risk.cradle.climate.migration.parentquest.ParentQuestMapRepository;
+import com.rbs.risk.cradle.climate.migration.spi.SqlGenerator;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.stream.Collectors;
+
+/**
+ * Generates MERGE + rollback scripts for CRS/CTP_PARENT_QUEST_MAP
+ * based on the uploaded Parent Quest CSV.
+ *
+ * IMPORTANT:
+ * - All literal values (including numbers) are emitted single-quoted,
+ *   to match the existing hand-written scripts.
+ * - SELECT lines are single-line with aliases, ready to be copy-pasted.
+ */
+@Component
+public class ParentQuestMapGenerator implements SqlGenerator {
+
+    private final ParentQuestMapRepository repository;
+
+    public ParentQuestMapGenerator(ParentQuestMapRepository repository) {
+        this.repository = repository;
+    }
+
+    @Override
+    public List<GeneratedSqlFile> generate(SqlGenerationContext ctx) {
+
+        List<ParentQuestCsvRecord> records = ctx.getParentQuestCsvRecords();
+        if (records == null || records.isEmpty()) {
+            return List.of(); // no CSV, nothing to generate
+        }
+
+        // Keep only parent questions with a defined question order
+        List<ParentQuestCsvRecord> parentRows = records.stream()
+                .filter(r -> r.getIsParentQuestion() != null
+                        && r.getIsParentQuestion().trim().equalsIgnoreCase("Y"))
+                .filter(r -> r.getQuestionOrder() != null)
+                .collect(Collectors.toList());
+
+        if (parentRows.isEmpty()) {
+            return List.of();
+        }
+
+        String prefix = "CTP".equalsIgnoreCase(ctx.getModelType()) ? "CTP" : "CRS";
+        String tableName = prefix + "_PARENT_QUEST_MAP";
+        String folder = ctx.getRootOutputFolder() + "/db/Model/CDF/Data";
+
+        long startParMapId = repository.findMaxParMapId(prefix) + 1;
+
+        List<GeneratedSqlFile> files = new ArrayList<>();
+        files.add(buildMergeFile(ctx, tableName, parentRows, startParMapId, folder));
+        files.add(buildRollbackFile(ctx, tableName, parentRows.size(), startParMapId, folder));
+
+        return files;
+    }
+
+    private GeneratedSqlFile buildMergeFile(SqlGenerationContext ctx,
+                                            String tableName,
+                                            List<ParentQuestCsvRecord> parentRows,
+                                            long startParMapId,
+                                            String folder) {
+
+        // If your existing script uses a different alias, just change this one variable
+        String tableAlias = "CPM";
+
+        List<String> selects = new ArrayList<>();
+        long currentId = startParMapId;
+
+        for (ParentQuestCsvRecord row : parentRows) {
+
+            String hasRemoved = row.getHasRemovedInUpperVersions();
+            String hasRemovedSql = (hasRemoved == null || hasRemoved.trim().isEmpty())
+                    ? "''"
+                    : "'" + hasRemoved.trim().toUpperCase(Locale.ROOT) + "'";
+
+            Long moduleId = row.getModuleId();
+            String moduleIdSql = (moduleId == null)
+                    ? "''"
+                    : "'" + moduleId + "'";
+
+            Integer order = row.getQuestionOrder();
+            String orderSql = (order == null)
+                    ? "''"
+                    : "'" + order + "'";
+
+            // All values (including numbers) single-quoted, with explicit aliases.
+            // Single-line SELECT, mirroring your existing style.
+            String select = "SELECT "
+                    + "'" + currentId + "' PAR_MAP_ID, "
+                    + moduleIdSql + " MODULE_ID, "
+                    + "'" + row.getQuestionId() + "' PARENT_QUESTION_ID, "
+                    + "'" + row.getModelVerId() + "' MODEL_VERSION_ID, "
+                    + "'" + row.getSectionId() + "' SECTION_ID, "
+                    + hasRemovedSql + " HAS_REMOVED_IN_UPPER_VERSIONS, "
+                    + orderSql + " QUEST_ORDER, "
+                    + "'0' EXPIRY_EVENT_ID "
+                    + "FROM DUAL";
+
+            selects.add(select);
+            currentId++;
+        }
+
+        String usingBlock = selects.stream()
+                .collect(Collectors.joining("\n    UNION ALL\n    "));
+
+        String sql = """
+                SET DEFINE OFF;
+                MERGE INTO %s %s
+                USING
+                (
+                    %s
+                ) x
+                ON (x.PAR_MAP_ID = %s.PAR_MAP_ID)
+                WHEN NOT MATCHED THEN
+                    INSERT (PAR_MAP_ID, MODULE_ID, PARENT_QUESTION_ID, MODEL_VERSION_ID, SECTION_ID, HAS_REMOVED_IN_UPPER_VERSIONS, QUEST_ORDER, EXPIRY_EVENT_ID)
+                    VALUES (x.PAR_MAP_ID, x.MODULE_ID, x.PARENT_QUESTION_ID, x.MODEL_VERSION_ID, x.SECTION_ID, x.HAS_REMOVED_IN_UPPER_VERSIONS, x.QUEST_ORDER, x.EXPIRY_EVENT_ID);
+                COMMIT;
+                """.formatted(tableName, tableAlias, usingBlock, tableAlias);
+
+        String fileName = tableName + "_MERGE.sql";
+        return new GeneratedSqlFile(folder, fileName, sql);
+    }
+
+    private GeneratedSqlFile buildRollbackFile(SqlGenerationContext ctx,
+                                               String tableName,
+                                               int rowCount,
+                                               long startParMapId,
+                                               String folder) {
+
+        String jira = ctx.getJira();
+        long endId = startParMapId + rowCount - 1;
+
+        // Even here we keep literals single-quoted to be consistent with your style.
+        String sql = """
+                DELETE FROM %s
+                 WHERE PAR_MAP_ID BETWEEN '%d' AND '%d';
+                COMMIT;
+                """.formatted(tableName, startParMapId, endId);
+
+        String fileName = "%s_Rollback_%s.sql".formatted(jira, tableName);
+        return new GeneratedSqlFile(folder, fileName, sql);
+    }
+}
