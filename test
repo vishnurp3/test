@@ -1,1 +1,206 @@
-test
+SQL AUTOMATION POC – TECHNICAL OVERVIEW
+
+1. INTRODUCTION
+   This Proof of Concept (POC) provides an automated way to generate SQL scripts and reference data templates related to CRS and CTP model migration.
+
+The main goals are:
+
+* Reduce manual effort
+* Avoid human errors
+* Provide a reusable framework for database-related migration tasks
+
+The POC exposes three REST endpoints:
+
+1. Migration SQL script generation
+2. Parent Question CSV template generation
+3. Calculator reference data export
+
+2) ENDPOINTS OVERVIEW
+
+2.1 MIGRATION ENDPOINT
+
+Purpose:
+Generate SQL scripts required for model migration.
+Depending on the selected recipe, this endpoint runs a specific set of generators (for example: Model Version, Linked Model Version, Rules Quest Map, Parent Quest Map).
+
+HTTP Method:
+POST
+
+URL:
+/api/v1/migration/run/{modelType}/{modelCode}
+
+Path variables:
+
+* modelType: CRS or CTP
+* modelCode: Example values – SRI, SRS, SMF, SOS
+
+Query parameters:
+
+* jira (required): Jira ticket used inside SQL file names
+* upgradeType (optional): MINOR or MAJOR model version upgrade
+* recipe (required): Name of the recipe that defines which generators are executed
+
+File upload:
+
+* parentQuestCsv (optional): Filled Parent Question CSV used by the Parent Quest Map generator
+
+Response:
+Plain text.
+The response contains the list of generated SQL files along with their contents in sequence.
+
+Screenshot placeholder:
+[Insert screenshot of sample migration endpoint output]
+
+2.2 PARENT QUESTION TEMPLATE DOWNLOAD ENDPOINT
+
+Purpose:
+Download a pre-filled CSV template used to prepare input for Parent Question Map script generation.
+
+The CSV template contains the following columns:
+
+* Model Code
+* Model Version ID
+* Question ID
+* Question Description
+* Section ID
+* Module ID
+* Has Removed In Upper Versions
+* Is Parent Question (empty in template, to be filled by BA)
+* Question Order (empty in template, to be filled by BA)
+
+Special logic:
+
+* If Section ID is 5, it is expanded into two entries with Section ID 3 and 4.
+* For CRS, additional “final” questions are added automatically.
+* Rows are sorted by Section ID, then Module ID, then Question Description.
+
+HTTP Method:
+GET
+
+URL:
+/api/v1/migration/parent-quest/template/{modelType}/{modelCode}
+
+Path variables:
+
+* modelType: CRS or CTP
+* modelCode: Model code (for example SRI, SRS)
+
+Response:
+A CSV file that the Business Analyst can download, edit, and later upload into the Migration endpoint.
+
+Screenshot placeholder:
+[Insert screenshot of downloaded Parent Question template CSV]
+
+2.3 CALCULATOR REFERENCE DATA EXPORT ENDPOINT
+
+Purpose:
+Generate a zip file containing three template files used to configure a calculator model.
+These templates help developers start with pre-filled questions and variable details.
+
+The ZIP contains three files:
+
+1. Question-Where Mapping
+2. Strategy Mapping
+3. Module Strategy Config
+
+Important notes:
+
+* These files are templates only. They are not complete and must be manually refined.
+* In the Strategy Mapping file:
+
+  * The “commands” column must be updated based on the existing calculator logic.
+  * Weight factors must be reviewed and updated.
+  * Question order and child question mappings must be verified and adjusted.
+* In the Question-Where Mapping file:
+
+  * Question order must be checked.
+  * The “type” column must be filled manually.
+  * The ref data provider must be provided manually.
+* In the Module Strategy Config file:
+
+  * The generated content must be appended to the existing module strategy config.
+  * Missing input and output configuration must be filled manually.
+
+Overall purpose:
+Provide a starting template with pre-filled question and variable information, so that the calculator configuration work can begin quickly and with less manual setup.
+
+HTTP Method:
+GET
+
+URL:
+/api/v1/migration/calculator/models/{modelCode}/versions/{modelVersion}/export
+
+Path variables:
+
+* modelCode: Model code for the calculator
+* modelVersion: Specific version of the model
+
+Response:
+A ZIP file containing:
+
+* Question-Where Mapping file
+* Strategy Mapping file
+* Module Strategy Config file
+
+Screenshot placeholder:
+[Insert screenshot showing ZIP file contents and the three generated files]
+
+3. HIGH-LEVEL FLOW
+
+3.1 Template Download Flow
+
+* User calls the Parent Question template endpoint.
+* Service retrieves question and module mapping data from the database.
+* CRS-specific final question logic and Section ID 5 splitting (to 3 and 4) are applied.
+* A sorted CSV file is generated and returned to the user.
+
+3.2 Migration Flow
+
+* User calls the migration endpoint with:
+
+  * modelType
+  * modelCode
+  * jira
+  * upgradeType (optional)
+  * recipe
+  * optional Parent Question CSV
+* Migration engine builds a context object with these inputs.
+* Based on the requested recipe, a list of generators is executed in sequence.
+* Each generator returns one or more SQL files (forward and rollback scripts).
+* All generated SQL files are combined and returned as a single plain-text response.
+
+3.3 Calculator Reference Data Flow
+
+* User calls the calculator export endpoint with model code and model version.
+* Service reads the required question and variable data from the system.
+* Three reference data templates are generated:
+
+  * Question-Where mapping
+  * Strategy mapping
+  * Module strategy config
+* The three files are packaged into a ZIP file and returned to the user.
+
+4. SCREENSHOTS (PLACEHOLDERS)
+
+4.1 Migration Output
+[Insert screenshot of migration endpoint response showing generated SQL]
+
+4.2 Parent Question Template CSV
+[Insert screenshot of downloaded CSV template opened in Excel or similar]
+
+4.3 Filled Parent Question CSV Used in Migration
+[Insert screenshot of filled CSV before upload]
+
+4.4 Calculator Reference Data ZIP
+[Insert screenshot of the ZIP contents with the three files]
+
+5. CONCLUSION
+
+This POC automates core parts of the CRS and CTP model migration process.
+It provides:
+
+* Automatically generated SQL scripts for migration
+* A guided CSV-based process for Parent Question Map
+* Pre-filled templates for calculator reference data
+
+The design is modular and can be extended for additional tables, models, and use cases in future enhancements.
