@@ -1,1 +1,48 @@
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+public class InputBuilder {
+
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    public static Map<String, Object> buildInputsFromJson(String json) {
+        try {
+            // Parse the JSON into a Map
+            Map<String, Object> parsed = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+            
+            // Now convert into inputs.put(key, value) style map
+            Map<String, Object> inputs = new HashMap<>();
+            for (Map.Entry<String, Object> entry : parsed.entrySet()) {
+                inputs.put(entry.getKey(), entry.getValue());
+            }
+
+            return inputs;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Error parsing JSON into inputs map", e);
+        }
+    }
+
+    public static void main(String[] args) {
+        String json = """
+            {
+              "yourKey1": "value1",
+              "yourKey2": 3,
+              "yourKey3": false,
+              "yourKey4": null
+            }
+        """;
+
+        Map<String, Object> inputs = buildInputsFromJson(json);
+
+        // Print equivalent to inputs.put() lines
+        inputs.forEach((k, v) -> System.out.println("inputs.put(\"" + k + "\", " + formatValue(v) + ");"));
+    }
+
+    private static String formatValue(Object v) {
+        if (v == null) return "null";
+        if (v instanceof String) return "\"" + v + "\"";
+        return v.toString();
+    }
+}
